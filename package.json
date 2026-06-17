@@ -1,0 +1,13 @@
+{
+  "name": "friendster-clone",
+  "version": "1.0.0",
+  "description": "A nostalgic, educational recreation of the classic Friendster social network.",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

@@ -1,0 +1,196 @@
+/* ============================================================
+   Friendster Clone — classic early-2000s styling
+   ============================================================ */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #e8eef7;
+  font-family: Verdana, Arial, Helvetica, sans-serif;
+  font-size: 11px;
+  color: #333;
+}
+
+a { color: #1c54a8; text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+img { border: 0; }
+
+/* ---- Header ----------------------------------------------------- */
+.topbar {
+  background: linear-gradient(180deg, #3d6bb5 0%, #2a5095 100%);
+  border-bottom: 3px solid #1c3a6e;
+}
+.topbar-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.logo {
+  font-family: "Trebuchet MS", Verdana, sans-serif;
+  font-size: 26px;
+  font-weight: bold;
+  color: #fff;
+  letter-spacing: -1px;
+  cursor: pointer;
+  text-shadow: 1px 1px 0 #1c3a6e;
+}
+.logo span { color: #ffd24a; }
+.topbar-user { color: #dce6f7; font-size: 11px; text-align: right; }
+.topbar-user a { color: #fff; font-weight: bold; }
+
+/* ---- Nav bar ---------------------------------------------------- */
+.navbar {
+  background: #d7e2f4;
+  border-bottom: 1px solid #9fb6dc;
+}
+.navbar-inner {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 14px;
+  display: flex;
+  gap: 2px;
+}
+.navbar a {
+  display: block;
+  padding: 7px 14px;
+  color: #1c3a6e;
+  font-weight: bold;
+  font-size: 11px;
+}
+.navbar a:hover { background: #c2d3ee; text-decoration: none; }
+.navbar a.active { background: #fff; border-top: 2px solid #2a5095; }
+
+/* ---- Layout ----------------------------------------------------- */
+.wrap {
+  max-width: 900px;
+  margin: 14px auto;
+  padding: 0 14px;
+}
+.columns { display: flex; gap: 14px; align-items: flex-start; }
+.col-left { width: 230px; flex: none; }
+.col-main { flex: 1; min-width: 0; }
+
+/* ---- Boxes ------------------------------------------------------ */
+.box {
+  background: #fff;
+  border: 1px solid #9fb6dc;
+  margin-bottom: 14px;
+}
+.box-title {
+  background: linear-gradient(180deg, #6f95d4 0%, #4a76c4 100%);
+  color: #fff;
+  font-weight: bold;
+  padding: 5px 9px;
+  font-size: 11px;
+  border-bottom: 1px solid #345a9c;
+}
+.box-body { padding: 10px; }
+
+/* ---- Profile header -------------------------------------------- */
+.profile-head { display: flex; gap: 14px; }
+.profile-photo {
+  width: 140px; height: 140px; flex: none;
+  border: 1px solid #9fb6dc; padding: 3px; background: #fff;
+}
+.profile-photo img { width: 100%; height: 100%; display: block; }
+.profile-name { font-size: 18px; font-weight: bold; color: #1c3a6e; }
+.profile-headline { color: #777; font-style: italic; margin: 4px 0 8px; }
+.fact { margin: 2px 0; }
+.fact b { color: #1c3a6e; }
+
+/* ---- Stats badge ----------------------------------------------- */
+.stats { text-align: center; }
+.stats .num { font-size: 22px; font-weight: bold; color: #e0729b; }
+
+/* ---- Friends grid ---------------------------------------------- */
+.friend-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.friend-cell { width: 64px; text-align: center; font-size: 10px; }
+.friend-cell img {
+  width: 60px; height: 60px; border: 1px solid #9fb6dc; padding: 2px; background: #fff;
+}
+.friend-cell a { display: block; }
+
+/* ---- Testimonials ---------------------------------------------- */
+.testi { display: flex; gap: 9px; padding: 9px 0; border-bottom: 1px dotted #c9d6ec; }
+.testi:last-child { border-bottom: 0; }
+.testi img { width: 48px; height: 48px; border: 1px solid #9fb6dc; padding: 2px; flex: none; }
+.testi .who { font-weight: bold; }
+.testi .when { color: #999; font-size: 10px; }
+.testi .text { margin-top: 3px; }
+
+/* ---- Music ------------------------------------------------------ */
+.song { padding: 8px 0; border-bottom: 1px dotted #c9d6ec; }
+.song:last-child { border-bottom: 0; }
+.song-info { margin-bottom: 5px; }
+.song-title { font-weight: bold; color: #1c3a6e; }
+.song-artist { color: #777; }
+.song audio { width: 100%; height: 32px; margin-top: 2px; }
+.autoplay-hint { display: block; margin-top: 3px; color: #b5651d; }
+.autoplay-toggle { background: #f4f7fc; border: 1px solid #d7e2f4; padding: 7px 9px; }
+.autoplay-toggle label { font-weight: bold; color: #1c3a6e; cursor: pointer; }
+.autoplay-toggle input { width: auto; margin-right: 5px; }
+
+/* ---- Background presets ----------------------------------------- */
+input[type=color] { width: 60px; height: 28px; padding: 1px; cursor: pointer; }
+.bg-presets { display: flex; flex-wrap: wrap; gap: 6px; margin: 5px 0 2px; }
+.bg-swatch {
+  width: 34px; height: 34px; border: 1px solid #9fb6dc; border-radius: 3px;
+  cursor: pointer; padding: 0;
+}
+.bg-swatch:hover { outline: 2px solid #4a76c4; }
+input[type=file] { font-size: 11px; padding: 4px 0; }
+
+/* ---- Bulletins / feed ------------------------------------------ */
+.bulletin { padding: 8px 0; border-bottom: 1px dotted #c9d6ec; display: flex; gap: 9px; }
+.bulletin:last-child { border-bottom: 0; }
+.bulletin img { width: 40px; height: 40px; border: 1px solid #9fb6dc; padding: 2px; flex: none; }
+.bulletin .meta { color: #999; font-size: 10px; }
+
+/* ---- Forms ----------------------------------------------------- */
+label.field { display: block; margin: 8px 0 3px; font-weight: bold; color: #1c3a6e; }
+input[type=text], input[type=password], input[type=number], textarea, select {
+  width: 100%; padding: 5px; border: 1px solid #9fb6dc; font-family: inherit; font-size: 11px;
+  background: #fbfcff;
+}
+textarea { resize: vertical; min-height: 60px; }
+
+.btn {
+  display: inline-block; cursor: pointer;
+  background: linear-gradient(180deg, #6f95d4 0%, #4a76c4 100%);
+  color: #fff; font-weight: bold; font-size: 11px;
+  border: 1px solid #345a9c; padding: 6px 16px; border-radius: 2px;
+  font-family: inherit;
+}
+.btn:hover { background: linear-gradient(180deg, #7fa3df 0%, #5a86d4 100%); }
+.btn.secondary { background: #eef2fa; color: #1c3a6e; border-color: #9fb6dc; }
+.btn.danger { background: linear-gradient(180deg, #d97676 0%, #c44a4a 100%); border-color: #9c3434; }
+
+.btn-row { margin-top: 12px; display: flex; gap: 8px; }
+
+/* ---- Search / member list -------------------------------------- */
+.member-row { display: flex; gap: 10px; padding: 10px 0; border-bottom: 1px dotted #c9d6ec; align-items: center; }
+.member-row:last-child { border-bottom: 0; }
+.member-row img { width: 54px; height: 54px; border: 1px solid #9fb6dc; padding: 2px; flex: none; }
+.member-row .name { font-weight: bold; font-size: 12px; }
+
+/* ---- Login / centered ------------------------------------------ */
+.center-wrap { max-width: 380px; margin: 50px auto; }
+.welcome-tag { text-align: center; color: #1c3a6e; margin: 14px 0; line-height: 1.6; }
+
+.notice { background: #fff7d6; border: 1px solid #e0c84a; padding: 7px 9px; margin-bottom: 10px; }
+.error  { background: #ffe0e0; border: 1px solid #d97676; padding: 7px 9px; margin-bottom: 10px; }
+
+.muted { color: #999; }
+.section-gap { height: 6px; }
+hr.sep { border: 0; border-top: 1px dotted #c9d6ec; margin: 10px 0; }
+
+/* ---- Footer ---------------------------------------------------- */
+.footer {
+  text-align: center; color: #88a; font-size: 10px;
+  padding: 20px; border-top: 1px solid #c2d3ee; margin-top: 20px;
+}
