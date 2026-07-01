@@ -53,7 +53,7 @@ function readBody(req) {
 /* Proxy a remote audio file so the browser can decode it without CORS.
    Basic SSRF guard + size/type limits — this is a hobby app, not a
    hardened open proxy. */
-const MAX_AUDIO_BYTES = 30 * 1024 * 1024; // 30 MB
+const MAX_AUDIO_BYTES = 60 * 1024 * 1024; // 60 MB (longer tracks/mixes)
 function isBlockedHost(hostname) {
   const h = hostname.toLowerCase();
   return (
@@ -143,8 +143,10 @@ function ytAudio(target, res) {
     "-x", "--audio-format", "mp3", "--audio-quality", "5",
     "--no-playlist", "--no-progress", "-o", outTmpl, url.href,
   ];
+  console.log(`[yt] extracting: ${url.href}`);
   execFile("yt-dlp", args, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
+      console.error(`[yt] FAILED ${url.href}\n${String(stderr || err.message).slice(-500)}`);
       cleanup();
       if (err.code === "ENOENT") {
         return sendJSON(res, 501, {
@@ -163,8 +165,9 @@ function ytAudio(target, res) {
       cleanup();
       if (rerr) return sendJSON(res, 502, { error: "Could not read the extracted audio." });
       if (data.length > MAX_AUDIO_BYTES) {
-        return sendJSON(res, 413, { error: "Extracted audio is too large (max 30 MB)." });
+        return sendJSON(res, 413, { error: "That track is too long (over 60 MB of audio)." });
       }
+      console.log(`[yt] ok: ${url.href} (${(data.length / 1048576).toFixed(1)} MB)`);
       res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": data.length });
       res.end(data);
     });

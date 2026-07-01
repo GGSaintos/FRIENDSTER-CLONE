@@ -233,6 +233,14 @@ label.field .opt { color: #999; font-weight: normal; font-size: 11px; }
   background: #f0f2f7; border: 1px solid #c9d6ec; border-radius: 3px;
 }
 .mx-time { display: flex; justify-content: space-between; font-size: 11px; color: #555; margin: 3px 0; }
+.mx-zoom {
+  width: 100%; height: 80px; display: block; margin-top: 4px; cursor: grab;
+  background: #eef1f7; border: 1px solid #c9d6ec; border-radius: 3px; touch-action: none;
+}
+.mx-zoom.grabbing { cursor: grabbing; }
+.mx-hint { font-size: 10px; margin: 2px 0; }
+.mx-grid-ctrl { display: flex; align-items: center; gap: 4px; margin-top: 4px; font-size: 11px; color: #555; }
+.mx-grid-ctrl .btn { padding: 1px 7px; font-size: 12px; line-height: 1.4; }
 
 /* ---- recorded mixes --------------------------------------------- */
 .mix-card { border: 1px solid #c9d6ec; border-radius: 4px; padding: 8px; margin-bottom: 10px; background: #fbfcff; }

@@ -131,6 +131,40 @@ const Mixer = (() => {
       ctx.fillRect(i * barW, (h - bh) / 2, Math.max(1, barW - 1), bh);
     }
   }
+  // higher-resolution peaks (buckets per second) for the zoomed view
+  function computePeaksHiRes(buffer, perSec) {
+    const data = buffer.getChannelData(0);
+    const block = Math.max(1, Math.floor(buffer.sampleRate / perSec));
+    const peaks = [];
+    for (let i = 0; i < data.length; i += block) {
+      let max = 0;
+      for (let j = 0; j < block && i + j < data.length; j++) {
+        const v = Math.abs(data[i + j]);
+        if (v > max) max = v;
+      }
+      peaks.push(max);
+    }
+    return peaks;
+  }
+  // estimate the phase of the first beat so the grid lines up
+  function detectBeatOffset(buffer, bpm) {
+    const sr = buffer.sampleRate, data = buffer.getChannelData(0), fps = 200;
+    const step = Math.max(1, Math.floor(sr / fps));
+    const limit = Math.min(data.length, sr * 6);
+    const env = [];
+    for (let i = 0; i < limit; i += step) {
+      let s = 0;
+      for (let j = 0; j < step && i + j < limit; j++) s += data[i + j] * data[i + j];
+      env.push(Math.sqrt(s / step));
+    }
+    let best = 0, bestI = 0;
+    for (let i = 1; i < env.length; i++) {
+      const on = env[i] - env[i - 1];
+      if (on > best) { best = on; bestI = i; }
+    }
+    const beatInt = 60 / bpm;
+    return (bestI / fps) % beatInt;
+  }
   function fmtTime(s) {
     if (!isFinite(s)) s = 0;
     const m = Math.floor(s / 60);
@@ -163,10 +197,22 @@ const Mixer = (() => {
       this.seekOffset = 0;
       this.startCtx = 0;
       this.raf = null;
+      this.peaksHi = null;
+      this.hiRate = 100; // buckets per second in the zoom view
+      this.beatOffset = 0; // seconds — phase of the first beat
+      this.zoomWindow = 6; // seconds visible in the zoomed view
+      // audio nodes (created lazily by the instance):
+      this.vol = null;    // user volume fader
+      this.gain = null;   // crossfader gain
+      this.fxGain = null; // echo/reverb wet send (0 = off)
+      this.delay = null;
+      this.reverb = null;
+      this._fxTimer = null;
     }
 
     q(sel) { return this.inst.q(sel); }
     canvas() { return this.q("#mx_wave_" + this.side); }
+    zoomCanvas() { return this.q("#mx_zoom_" + this.side); }
     rate() { return this.targetBpm / this.baseBpm; }
 
     async loadFile(file) {
@@ -204,7 +250,9 @@ const Mixer = (() => {
       this.keyShift = 0;
       this.seekOffset = 0;
       this.peaks = computePeaks(buf, 500);
-      this.drawWave(0);
+      this.peaksHi = computePeaksHiRes(buf, this.hiRate);
+      this.beatOffset = detectBeatOffset(buf, this.baseBpm);
+      this.render(0);
       // audio nodes for playback (lazy — needs Tone)
       this.inst.ensureAudio();
       if (typeof Tone !== "undefined") {
@@ -220,7 +268,28 @@ const Mixer = (() => {
         url: this.toneBuffer, loop: false, grainSize: 0.2, overlap: 0.1, detune: this.keyShift * 100,
       });
       this.player.playbackRate = this.rate();
-      this.player.connect(this.gain);
+      this.player.connect(this.vol); // player -> volume -> crossfader -> master
+    }
+
+    setVolume(v) { if (this.vol) this.vol.gain.value = v; }
+
+    /* 1/8-second delay + reverb "combo" at 20% wet, held for 3 seconds. */
+    async triggerFx() {
+      try { await Tone.start(); } catch (e) {}
+      this.inst.ensureAudio();
+      if (!this.fxGain) return;
+      const g = this.fxGain.gain;
+      const now = Tone.now();
+      g.cancelScheduledValues(now);
+      g.setValueAtTime(0.2, now);          // 20% wet on
+      g.setValueAtTime(0.2, now + 3);      // hold 3 s
+      g.linearRampToValueAtTime(0, now + 3.25); // quick release
+      const b = this.q("#mx_fx_" + this.side);
+      if (b) {
+        b.classList.add("active");
+        clearTimeout(this._fxTimer);
+        this._fxTimer = setTimeout(() => b.classList.remove("active"), 3000);
+      }
     }
 
     currentPos() {
@@ -259,8 +328,27 @@ const Mixer = (() => {
       cancelAnimationFrame(this.raf);
       this.setBtn(false);
       this.spin(false);
+      this.render(this.seekOffset);
     }
     toggle() { this.playing ? this.pause() : this.play(); }
+
+    /* Move the playhead to an absolute time without touching the audio
+       (used while dragging the zoomed waveform). */
+    setSeek(pos) {
+      if (!this.audioBuffer) return;
+      this.seekOffset = Math.max(0, Math.min(this.duration, pos));
+      this.render(this.seekOffset);
+      this.inst.updateTime(this.side, this.seekOffset, this.duration);
+    }
+
+    beatInterval() { return 60 / this.baseBpm; }
+    /* Shift the beat grid. A fine delta moves every line; a whole-beat
+       delta re-aligns which line is the downbeat. */
+    nudgeGrid(delta) {
+      if (!this.audioBuffer) return;
+      this.beatOffset += delta;
+      this.render(this.currentPos());
+    }
 
     seekFraction(fr) {
       if (!this.audioBuffer) return;
@@ -272,23 +360,78 @@ const Mixer = (() => {
         this.player.start(undefined, off);
       } else {
         this.seekOffset = off;
-        this.drawWave(off / this.duration);
-        this.inst.updateTime(this.side, off, this.duration);
       }
+      this.render(off);
+      this.inst.updateTime(this.side, off, this.duration);
     }
 
     _animate() {
       const tick = () => {
         const pos = this.currentPos();
-        this.drawWave(pos / this.duration);
+        this.render(pos);
         this.inst.updateTime(this.side, pos, this.duration);
-        if (pos >= this.duration) { this.pause(); this.seekOffset = 0; this.drawWave(0); return; }
+        if (pos >= this.duration) { this.pause(); this.seekOffset = 0; this.render(0); return; }
         this.raf = requestAnimationFrame(tick);
       };
       this.raf = requestAnimationFrame(tick);
     }
 
-    drawWave(progress) { drawWaveform(this.canvas(), this.peaks, progress); }
+    render(pos) {
+      drawWaveform(this.canvas(), this.peaks, this.duration ? pos / this.duration : 0);
+      this.drawZoom(pos);
+    }
+
+    /* Zoomed, scrolling waveform centered on the playhead, with a beat
+       grid (downbeats brighter) and a fixed center playhead line. */
+    drawZoom(pos) {
+      const cv = this.zoomCanvas();
+      if (!cv) return;
+      const ctx = cv.getContext("2d");
+      const w = cv.width, h = cv.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#eef1f7";
+      ctx.fillRect(0, 0, w, h);
+      if (!this.peaksHi || !this.duration) return;
+      const win = this.zoomWindow, startT = pos - win / 2;
+      // waveform
+      ctx.fillStyle = "#8a94ab";
+      for (let x = 0; x < w; x++) {
+        const t = startT + (x / w) * win;
+        if (t < 0 || t > this.duration) continue;
+        const peak = this.peaksHi[Math.floor(t * this.hiRate)] || 0;
+        const bh = Math.max(1, peak * h * 0.9);
+        ctx.fillRect(x, (h - bh) / 2, 1, bh);
+      }
+      // beat grid
+      const beatInt = 60 / this.baseBpm;
+      if (beatInt > 0) {
+        let n = Math.floor((startT - this.beatOffset) / beatInt);
+        for (; ; n++) {
+          const beatT = this.beatOffset + n * beatInt;
+          if (beatT > startT + win) break;
+          if (beatT < startT || beatT < 0) continue;
+          const x = ((beatT - startT) / win) * w;
+          const downbeat = (((n % 4) + 4) % 4) === 0;
+          ctx.strokeStyle = downbeat ? "#ff5500" : "rgba(90,100,120,0.45)";
+          ctx.lineWidth = downbeat ? 2 : 1;
+          ctx.beginPath();
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, h);
+          ctx.stroke();
+          if (downbeat) {
+            ctx.fillStyle = "#ff5500";
+            ctx.fillRect(x - 1, 0, 3, 4);
+          }
+        }
+      }
+      // center playhead
+      ctx.strokeStyle = "#111";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(w / 2, 0);
+      ctx.lineTo(w / 2, h);
+      ctx.stroke();
+    }
     setBtn(playing) {
       const b = this.q("#mx_play_" + this.side);
       if (b) b.textContent = playing ? "⏸ Pause" : "▶ Play";
@@ -317,6 +460,7 @@ const Mixer = (() => {
       this.deckB = new Deck(this, "b");
       this.recording = false;
       this.recStart = 0;
+      this._winListeners = []; // window listeners to remove on dispose
     }
 
     q(sel) { return this.container.querySelector(sel); }
@@ -326,8 +470,19 @@ const Mixer = (() => {
       this.master = new Tone.Gain(1).toDestination();
       this.recorder = new Tone.Recorder();
       this.master.connect(this.recorder);
-      this.deckA.gain = new Tone.Gain(1).connect(this.master);
-      this.deckB.gain = new Tone.Gain(1).connect(this.master);
+      [this.deckA, this.deckB].forEach((d) => {
+        d.vol = new Tone.Gain(1); // volume fader
+        d.gain = new Tone.Gain(1); // crossfader
+        d.fxGain = new Tone.Gain(0); // echo/reverb wet send (off)
+        d.delay = new Tone.FeedbackDelay({ delayTime: 0.125, feedback: 0.35, wet: 1 });
+        d.reverb = new Tone.Reverb({ decay: 1.8, wet: 1 });
+        d.vol.connect(d.gain);
+        d.gain.connect(this.master); // dry path
+        d.gain.connect(d.fxGain); // wet path: crossfader -> send -> delay -> reverb -> master
+        d.fxGain.connect(d.delay);
+        d.delay.connect(d.reverb);
+        d.reverb.connect(this.master);
+      });
       const x = (this.q("#mx_xfade") ? +this.q("#mx_xfade").value : 50) / 100;
       this.setCrossfade(x);
       this.audioReady = true;
@@ -352,6 +507,15 @@ const Mixer = (() => {
             <button class="btn secondary" id="mx_urlbtn_${side}">Load URL</button>
           </div>
           <canvas class="mx-wave" id="mx_wave_${side}" width="600" height="70"></canvas>
+          <canvas class="mx-zoom" id="mx_zoom_${side}" width="600" height="80" title="Drag to scrub"></canvas>
+          <div class="mx-grid-ctrl">
+            <span>Grid:</span>
+            <button class="btn secondary" id="mx_grid_bl_${side}" title="Downbeat back one beat">&laquo;</button>
+            <button class="btn secondary" id="mx_grid_fl_${side}" title="Nudge grid left">&lsaquo;</button>
+            <button class="btn secondary" id="mx_grid_fr_${side}" title="Nudge grid right">&rsaquo;</button>
+            <button class="btn secondary" id="mx_grid_br_${side}" title="Downbeat forward one beat">&raquo;</button>
+          </div>
+          <div class="mx-hint muted">Overview: click to seek &middot; Beatgrid: drag to scrub &middot; Grid: align the downbeat (orange)</div>
           <div class="mx-time"><span id="mx_read_${side}">No track loaded</span><span id="mx_pos_${side}">0:00 / 0:00</span></div>
           <div class="btn-row">
             <button class="btn" id="mx_play_${side}" disabled>▶ Play</button>
@@ -380,6 +544,8 @@ const Mixer = (() => {
       this.wire();
       drawWaveform(this.q("#mx_wave_a"), null, 0);
       drawWaveform(this.q("#mx_wave_b"), null, 0);
+      this.deckA.drawZoom(0);
+      this.deckB.drawZoom(0);
     }
 
     wire() {
@@ -401,6 +567,40 @@ const Mixer = (() => {
           const r = cv.getBoundingClientRect();
           deck.seekFraction((e.clientX - r.left) / r.width);
         });
+        // beat-grid nudge controls
+        this.q("#mx_grid_bl_" + s).addEventListener("click", () => deck.nudgeGrid(-deck.beatInterval()));
+        this.q("#mx_grid_fl_" + s).addEventListener("click", () => deck.nudgeGrid(-0.01));
+        this.q("#mx_grid_fr_" + s).addEventListener("click", () => deck.nudgeGrid(0.01));
+        this.q("#mx_grid_br_" + s).addEventListener("click", () => deck.nudgeGrid(deck.beatInterval()));
+        // drag the zoomed beatgrid to scrub (pause while dragging, resume on release)
+        const zoom = this.q("#mx_zoom_" + s);
+        let dragging = false, wasPlaying = false, startX = 0, startPos = 0;
+        const down = (e) => {
+          if (!deck.audioBuffer) return;
+          dragging = true;
+          wasPlaying = deck.playing;
+          if (deck.playing) deck.pause();
+          startX = e.clientX;
+          startPos = deck.seekOffset;
+          zoom.classList.add("grabbing");
+          e.preventDefault();
+        };
+        const move = (e) => {
+          if (!dragging) return;
+          const rect = zoom.getBoundingClientRect();
+          const dt = -((e.clientX - startX) / rect.width) * deck.zoomWindow;
+          deck.setSeek(startPos + dt);
+        };
+        const up = () => {
+          if (!dragging) return;
+          dragging = false;
+          zoom.classList.remove("grabbing");
+          if (wasPlaying) deck.play();
+        };
+        zoom.addEventListener("pointerdown", down);
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+        this._winListeners.push(["pointermove", move], ["pointerup", up]);
       });
       this.q("#mx_xfade").addEventListener("input", (e) => this.setCrossfade(e.target.value / 100));
       this.q("#mx_sync").addEventListener("click", () => this.sync());
@@ -510,6 +710,8 @@ const Mixer = (() => {
 
     dispose() {
       try {
+        this._winListeners.forEach(([ev, fn]) => window.removeEventListener(ev, fn));
+        this._winListeners = [];
         this.deckA.dispose();
         this.deckB.dispose();
         if (this.recording && this.recorder) this.recorder.stop();
