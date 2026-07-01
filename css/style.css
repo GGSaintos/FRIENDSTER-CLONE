@@ -205,7 +205,17 @@ label.field .opt { color: #999; font-weight: normal; font-size: 11px; }
 .mx-slider-label { display: block; margin: 6px 0 1px; color: #555; }
 .deck input[type=range], .mixer-center input[type=range] { width: 100%; }
 .mixer-center { text-align: center; margin-top: 10px; padding-top: 8px; border-top: 1px dotted #c9d6ec; }
-.mx-xlabels { display: flex; justify-content: space-between; font-weight: bold; color: #1c3a6e; }
+.mixer-center .mx-xfade { width: 200px; max-width: 70%; }
+.mx-xlabels { display: flex; justify-content: space-between; font-weight: bold; color: #1c3a6e; width: 200px; max-width: 70%; margin: 0 auto; }
+
+/* per-deck volume fader + echo/reverb button */
+.mx-vol { display: flex; flex-direction: column; align-items: center; gap: 5px; margin-top: 8px; }
+.mx-vol input.mx-vol-fader {
+  -webkit-appearance: slider-vertical; appearance: slider-vertical;
+  width: 26px; height: 90px; padding: 0;
+}
+.btn.mx-fx { padding: 3px 10px; font-size: 11px; }
+.btn.mx-fx.active { background: #ff5500; color: #fff; box-shadow: 0 0 6px #ff9a5c; }
 .mx-rec-status { margin-top: 4px; color: #cc0000; font-weight: bold; min-height: 14px; }
 .btn.recording { background: #cc0000; color: #fff; }
 

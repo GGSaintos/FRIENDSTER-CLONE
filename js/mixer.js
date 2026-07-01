@@ -443,8 +443,12 @@ const Mixer = (() => {
 
     dispose() {
       cancelAnimationFrame(this.raf);
+      clearTimeout(this._fxTimer);
       if (this.player) { try { this.player.stop(); } catch (e) {} this.player.dispose(); this.player = null; }
       if (this.toneBuffer) { this.toneBuffer.dispose(); this.toneBuffer = null; }
+      ["vol", "gain", "fxGain", "delay", "reverb"].forEach((k) => {
+        if (this[k]) { try { this[k].dispose(); } catch (e) {} this[k] = null; }
+      });
     }
   }
 
@@ -524,6 +528,11 @@ const Mixer = (() => {
           <input type="range" id="mx_bpm_${side}" min="60" max="180" value="120" disabled>
           <label class="mx-slider-label">Key <b id="mx_keyval_${side}">0</b> st</label>
           <input type="range" id="mx_key_${side}" min="-6" max="6" value="0" step="1" disabled>
+          <div class="mx-vol">
+            <label class="mx-slider-label">Volume</label>
+            <input type="range" class="mx-vol-fader" id="mx_vol_${side}" min="0" max="100" value="100" orient="vertical">
+            <button class="btn mx-fx" id="mx_fx_${side}" title="1/8s echo + reverb at 20%, on for 3s">Echo/Verb</button>
+          </div>
         </div>`;
     }
 
@@ -535,7 +544,7 @@ const Mixer = (() => {
           <div class="mixer-center">
             <button class="btn" id="mx_sync">⇄ Match Deck B to A</button>
             <label class="mx-slider-label">Crossfader</label>
-            <input type="range" id="mx_xfade" min="0" max="100" value="50">
+            <input type="range" id="mx_xfade" class="mx-xfade" min="0" max="100" value="50">
             <div class="mx-xlabels"><span>A</span><span>B</span></div>
             <div class="btn-row"><button class="btn" id="mx_rec" disabled>● Record Mix</button></div>
             <div class="mx-rec-status" id="mx_recstatus"></div>
@@ -562,6 +571,8 @@ const Mixer = (() => {
           this.q("#mx_keyval_" + s).textContent = e.target.value;
           deck.setKeyShift(+e.target.value);
         });
+        this.q("#mx_vol_" + s).addEventListener("input", (e) => deck.setVolume(e.target.value / 100));
+        this.q("#mx_fx_" + s).addEventListener("click", () => deck.triggerFx());
         const cv = this.q("#mx_wave_" + s);
         cv.addEventListener("click", (e) => {
           const r = cv.getBoundingClientRect();
