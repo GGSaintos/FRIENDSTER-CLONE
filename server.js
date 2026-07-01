@@ -130,7 +130,12 @@ const server = http.createServer(async (req, res) => {
     try {
       await handleApi(req, res, urlPath);
     } catch (e) {
-      sendJSON(res, e.status || 500, { error: e.message || "Server error" });
+      // Log the real cause so it shows up in the Render logs, but only
+      // leak a safe message to the browser.
+      console.error(`[api] ${req.method} ${urlPath} failed:`, e);
+      const status = e.status || 500;
+      const message = status === 500 ? "Server error — check the server logs." : e.message;
+      sendJSON(res, status, { error: message });
     }
     return;
   }
@@ -143,12 +148,24 @@ server.listen(PORT, () => {
   console.log(`\n  friendster clone running at  http://localhost:${PORT}\n  press Ctrl+C to stop\n`);
 });
 
+function describeError(e) {
+  // Node throws an AggregateError (with an empty message) when it can't
+  // reach a host on any address — the real reasons live in e.errors.
+  if (e && Array.isArray(e.errors) && e.errors.length) {
+    return e.errors.map((x) => x.message || x.code || String(x)).join("; ");
+  }
+  return e && (e.message || e.code) ? `${e.message || ""}${e.code ? " (" + e.code + ")" : ""}` : String(e);
+}
+
 async function initDb(attempt = 1) {
+  if (attempt === 1 && !process.env.DATABASE_URL) {
+    console.error("  DATABASE_URL is not set — no database is configured for this service.");
+  }
   try {
     await db.init();
     console.log("  database ready");
   } catch (e) {
-    console.error(`  database init failed (attempt ${attempt}): ${e.message}`);
+    console.error(`  database init failed (attempt ${attempt}): ${describeError(e)}`);
     if (attempt < 10) setTimeout(() => initDb(attempt + 1), 3000);
   }
 }
