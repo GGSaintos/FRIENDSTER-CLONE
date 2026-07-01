@@ -116,16 +116,17 @@ function viewSignup() {
         <div class="box-title">Join beefriend</div>
         <div class="box-body">
           <div id="formMsg"></div>
-          <label class="field">Full Name</label>
+          <label class="field">Full Name <span class="req">*</span></label>
           <input type="text" id="su_name" />
-          <label class="field">Username</label>
+          <label class="field">Username <span class="req">*</span></label>
           <input type="text" id="su_user" />
-          <label class="field">Password</label>
+          <label class="field">Password <span class="req">*</span></label>
           <input type="password" id="su_pass" />
-          <label class="field">Headline</label>
+          <label class="field">Headline <span class="opt">(optional)</span></label>
           <input type="text" id="su_headline" placeholder="Say something about yourself" />
-          <label class="field">Location</label>
+          <label class="field">Location <span class="opt">(optional)</span></label>
           <input type="text" id="su_location" />
+          <div class="form-note"><span class="req">*</span> required</div>
           <div class="btn-row">
             <button class="btn" onclick="doSignup()">Create Account</button>
             <a class="btn secondary" href="#/login">Cancel</a>

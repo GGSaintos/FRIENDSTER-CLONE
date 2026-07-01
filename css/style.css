@@ -186,6 +186,9 @@ textarea { resize: vertical; min-height: 60px; }
 .error  { background: #ffe0e0; border: 1px solid #d97676; padding: 7px 9px; margin-bottom: 10px; }
 
 .muted { color: #999; }
+.req { color: #cc0000; font-weight: bold; }
+label.field .opt { color: #999; font-weight: normal; font-size: 11px; }
+.form-note { margin-top: 6px; font-size: 11px; color: #999; }
 .section-gap { height: 6px; }
 hr.sep { border: 0; border-top: 1px dotted #c9d6ec; margin: 10px 0; }
 
