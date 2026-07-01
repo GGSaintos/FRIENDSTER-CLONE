@@ -308,13 +308,14 @@ const DB = {
     this._sync(targetId);
   },
 
-  addBulletin(userId, text, image) {
+  addBulletin(userId, text, image, mix) {
     const u = this.getUser(userId);
     if (!u) return;
     u.bulletins.unshift({
       date: new Date().toISOString().slice(0, 10),
       text,
       image: image || "",
+      mix: mix || null,
     });
     this._sync(userId);
   },

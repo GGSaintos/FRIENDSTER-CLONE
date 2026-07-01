@@ -1,56 +1,49 @@
 /* ============================================================
    Friendster Clone — DJ Mixer
-   Two decks, independent BPM (tempo) and key (pitch) via Tone.js
-   GrainPlayer, a crossfader, auto BPM + key detection, and mix
-   recording. The recorded mix is a webm audio blob (stored in the
-   IndexedDB MusicStore); its metadata lives on the user record.
+   Upload two audio files, each shown as a SoundCloud-style
+   waveform player (click to seek, moving playhead). BPM is
+   auto-detected and adjustable per deck (tempo without pitch,
+   via Tone.js GrainPlayer). A crossfader mixes the two, and the
+   result can be recorded to a mix (webm) with a timestamp.
 
-   Note: BPM/key detection are approximations done in the browser —
-   good enough to beatmatch, not studio-accurate (key especially).
+   The UI is built without the audio engine; Tone.js nodes are
+   created lazily on the first user interaction, so the interface
+   always renders even before audio is allowed to start.
+
+   Note: BPM detection is an in-browser approximation — close
+   enough to beatmatch, and the tempo slider lets you fine-tune.
    ============================================================ */
 
 const Mixer = (() => {
+  /* ---- tiny radix-2 FFT (used for optional key detection) -------- */
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-  // Krumhansl–Schmuckler key profiles.
   const MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
   const MINOR = [6.33, 2.68, 3.52, 5.38, 2.6, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17];
 
-  /* ---- tiny in-place radix-2 FFT (magnitudes only needed) -------- */
   function fft(re, im) {
     const n = re.length;
     for (let i = 1, j = 0; i < n; i++) {
       let bit = n >> 1;
       for (; j & bit; bit >>= 1) j ^= bit;
       j ^= bit;
-      if (i < j) {
-        [re[i], re[j]] = [re[j], re[i]];
-        [im[i], im[j]] = [im[j], im[i]];
-      }
+      if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; }
     }
     for (let len = 2; len <= n; len <<= 1) {
-      const ang = (-2 * Math.PI) / len;
-      const wr = Math.cos(ang), wi = Math.sin(ang);
+      const ang = (-2 * Math.PI) / len, wr = Math.cos(ang), wi = Math.sin(ang);
       for (let i = 0; i < n; i += len) {
         let cr = 1, ci = 0;
         for (let k = 0; k < len / 2; k++) {
           const a = i + k, b = i + k + len / 2;
-          const vr = re[b] * cr - im[b] * ci;
-          const vi = re[b] * ci + im[b] * cr;
-          re[b] = re[a] - vr; im[b] = im[a] - vi;
-          re[a] += vr; im[a] += vi;
-          const ncr = cr * wr - ci * wi;
-          ci = cr * wi + ci * wr;
-          cr = ncr;
+          const vr = re[b] * cr - im[b] * ci, vi = re[b] * ci + im[b] * cr;
+          re[b] = re[a] - vr; im[b] = im[a] - vi; re[a] += vr; im[a] += vi;
+          const ncr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = ncr;
         }
       }
     }
   }
 
-  /* ---- BPM via onset-envelope autocorrelation -------------------- */
   function detectBpm(buffer) {
-    const sr = buffer.sampleRate;
-    const data = buffer.getChannelData(0);
-    const fps = 200;
+    const sr = buffer.sampleRate, data = buffer.getChannelData(0), fps = 200;
     const step = Math.max(1, Math.floor(sr / fps));
     const env = [];
     for (let i = 0; i < data.length; i += step) {
@@ -60,8 +53,7 @@ const Mixer = (() => {
     }
     const onset = [];
     for (let i = 1; i < env.length; i++) onset.push(Math.max(0, env[i] - env[i - 1]));
-    const minLag = Math.floor((fps * 60) / 200); // 200 bpm
-    const maxLag = Math.floor((fps * 60) / 60); //  60 bpm
+    const minLag = Math.floor((fps * 60) / 200), maxLag = Math.floor((fps * 60) / 60);
     let best = -1, bestLag = minLag;
     for (let lag = minLag; lag <= maxLag; lag++) {
       let sum = 0;
@@ -74,21 +66,14 @@ const Mixer = (() => {
     return Math.round(bpm);
   }
 
-  /* ---- Key via averaged chroma + profile correlation ------------- */
   function detectKey(buffer) {
-    const sr = buffer.sampleRate;
-    const data = buffer.getChannelData(0);
-    const N = 2048;
+    const sr = buffer.sampleRate, data = buffer.getChannelData(0), N = 2048;
     const chroma = new Array(12).fill(0);
     const totalFrames = Math.floor(data.length / N);
-    const maxFrames = 400;
-    const hop = Math.max(1, Math.floor(totalFrames / maxFrames));
+    const hop = Math.max(1, Math.floor(totalFrames / 400));
     for (let f = 0; f < totalFrames; f += hop) {
-      const off = f * N;
-      const re = new Float64Array(N);
-      const im = new Float64Array(N);
+      const off = f * N, re = new Float64Array(N), im = new Float64Array(N);
       for (let i = 0; i < N; i++) {
-        // Hann window
         const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (N - 1));
         re[i] = (data[off + i] || 0) * w;
       }
@@ -97,297 +82,424 @@ const Mixer = (() => {
         const freq = (k * sr) / N;
         if (freq < 55 || freq > 4000) continue;
         const mag = Math.sqrt(re[k] * re[k] + im[k] * im[k]);
-        const midi = 69 + 12 * Math.log2(freq / 440);
-        const pc = ((Math.round(midi) % 12) + 12) % 12;
+        const pc = ((Math.round(69 + 12 * Math.log2(freq / 440)) % 12) + 12) % 12;
         chroma[pc] += mag;
       }
     }
-    // correlate against all 24 keys
     function corr(profile, rot) {
       const p = [], c = [];
       for (let i = 0; i < 12; i++) { p.push(profile[i]); c.push(chroma[(i + rot) % 12]); }
-      const mp = p.reduce((a, b) => a + b) / 12;
-      const mc = c.reduce((a, b) => a + b) / 12;
+      const mp = p.reduce((a, b) => a + b) / 12, mc = c.reduce((a, b) => a + b) / 12;
       let num = 0, dp = 0, dc = 0;
-      for (let i = 0; i < 12; i++) {
-        num += (p[i] - mp) * (c[i] - mc);
-        dp += (p[i] - mp) ** 2;
-        dc += (c[i] - mc) ** 2;
-      }
+      for (let i = 0; i < 12; i++) { num += (p[i] - mp) * (c[i] - mc); dp += (p[i] - mp) ** 2; dc += (c[i] - mc) ** 2; }
       return num / (Math.sqrt(dp * dc) || 1);
     }
     let best = { score: -2, root: 0, mode: "major" };
     for (let root = 0; root < 12; root++) {
-      const maj = corr(MAJOR, root);
-      const min = corr(MINOR, root);
+      const maj = corr(MAJOR, root), min = corr(MINOR, root);
       if (maj > best.score) best = { score: maj, root, mode: "major" };
       if (min > best.score) best = { score: min, root, mode: "minor" };
     }
-    return {
-      root: best.root,
-      mode: best.mode,
-      name: `${NOTE_NAMES[best.root]} ${best.mode}`,
-    };
+    return { root: best.root, mode: best.mode, name: `${NOTE_NAMES[best.root]} ${best.mode}` };
   }
 
-  /* ---- decode an object URL into a Tone buffer + AudioBuffer ----- */
-  async function loadBuffer(url) {
-    const tb = new Tone.ToneAudioBuffer();
-    await tb.load(url);
-    return tb; // tb.get() -> underlying AudioBuffer
+  /* ---- waveform ---------------------------------------------------- */
+  function computePeaks(buffer, buckets) {
+    const data = buffer.getChannelData(0);
+    const block = Math.max(1, Math.floor(data.length / buckets));
+    const peaks = [];
+    for (let i = 0; i < buckets; i++) {
+      let max = 0;
+      for (let j = 0; j < block; j++) {
+        const v = Math.abs(data[i * block + j] || 0);
+        if (v > max) max = v;
+      }
+      peaks.push(max);
+    }
+    return peaks;
+  }
+  function drawWaveform(canvas, peaks, progress) {
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width, h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    if (!peaks) return;
+    const barW = w / peaks.length;
+    for (let i = 0; i < peaks.length; i++) {
+      const bh = Math.max(1, peaks[i] * h * 0.92);
+      ctx.fillStyle = i / peaks.length <= progress ? "#ff5500" : "#c3c9d4";
+      ctx.fillRect(i * barW, (h - bh) / 2, Math.max(1, barW - 1), bh);
+    }
+  }
+  function fmtTime(s) {
+    if (!isFinite(s)) s = 0;
+    const m = Math.floor(s / 60);
+    return `${m}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
+  }
+  function audioContext() {
+    if (typeof Tone !== "undefined") return Tone.getContext().rawContext;
+    return new (window.AudioContext || window.webkitAudioContext)();
   }
 
   /* ================================================================
-     A single deck: GrainPlayer -> gain -> (crossfade) -> master
+     Deck — one uploaded track + waveform player + tempo/key control
      ================================================================ */
   class Deck {
-    constructor(side, ui) {
-      this.side = side;
-      this.ui = ui;
+    constructor(inst, side) {
+      this.inst = inst;
+      this.side = side; // "a" | "b"
+      this.audioBuffer = null;
+      this.toneBuffer = null;
       this.player = null;
-      this.buffer = null;
-      this.gain = new Tone.Gain(1);
+      this.gain = null; // created lazily by the instance
+      this.peaks = null;
+      this.duration = 0;
       this.baseBpm = 120;
       this.targetBpm = 120;
       this.key = { root: 0, mode: "major", name: "—" };
       this.keyShift = 0;
-      this.song = null;
+      this.title = "";
+      this.playing = false;
+      this.seekOffset = 0;
+      this.startCtx = 0;
+      this.raf = null;
     }
 
-    async load(song, url) {
-      this.dispose();
-      this.song = song;
-      const tb = await loadBuffer(url);
-      this.buffer = tb;
-      const audioBuf = tb.get();
-      this.baseBpm = detectBpm(audioBuf);
+    q(sel) { return this.inst.q(sel); }
+    canvas() { return this.q("#mx_wave_" + this.side); }
+    rate() { return this.targetBpm / this.baseBpm; }
+
+    async loadFile(file) {
+      const arr = await file.arrayBuffer();
+      return this._load(arr, file.name.replace(/\.[^.]+$/, ""));
+    }
+
+    async loadUrl(url) {
+      const isVideo = /(?:youtube\.com|youtu\.be|soundcloud\.com|vimeo\.com)/i.test(url);
+      const endpoint = isVideo ? "/api/youtube-audio?url=" : "/api/fetch-audio?url=";
+      const res = await fetch(endpoint + encodeURIComponent(url));
+      if (!res.ok) {
+        let msg = "Import failed.";
+        try { msg = (await res.json()).error || msg; } catch (e) {}
+        throw new Error(msg);
+      }
+      const arr = await res.arrayBuffer();
+      let title = isVideo ? "video import" : "imported track";
+      if (!isVideo) {
+        try {
+          title = decodeURIComponent(url.split("?")[0].split("/").pop()).replace(/\.[^.]+$/, "") || title;
+        } catch (e) {}
+      }
+      return this._load(arr, title);
+    }
+
+    async _load(arr, title) {
+      const buf = await audioContext().decodeAudioData(arr.slice(0));
+      this.audioBuffer = buf;
+      this.duration = buf.duration;
+      this.title = title;
+      this.baseBpm = detectBpm(buf);
       this.targetBpm = this.baseBpm;
-      this.key = detectKey(audioBuf);
+      this.key = detectKey(buf);
       this.keyShift = 0;
+      this.seekOffset = 0;
+      this.peaks = computePeaks(buf, 500);
+      this.drawWave(0);
+      // audio nodes for playback (lazy — needs Tone)
+      this.inst.ensureAudio();
+      if (typeof Tone !== "undefined") {
+        this.toneBuffer = new Tone.ToneAudioBuffer(buf);
+        this._makePlayer();
+      }
+      return { bpm: this.baseBpm, key: this.key, duration: this.duration };
+    }
+
+    _makePlayer() {
+      if (this.player) { try { this.player.stop(); } catch (e) {} this.player.dispose(); }
       this.player = new Tone.GrainPlayer({
-        url: tb,
-        loop: true,
-        grainSize: 0.2,
-        overlap: 0.1,
-        detune: 0,
-        playbackRate: 1,
+        url: this.toneBuffer, loop: false, grainSize: 0.2, overlap: 0.1, detune: this.keyShift * 100,
       });
+      this.player.playbackRate = this.rate();
       this.player.connect(this.gain);
-      return { bpm: this.baseBpm, key: this.key };
+    }
+
+    currentPos() {
+      if (!this.playing) return this.seekOffset;
+      let pos = this.seekOffset + (Tone.now() - this.startCtx) * this.rate();
+      return Math.min(pos, this.duration);
     }
 
     setTargetBpm(bpm) {
+      const pos = this.currentPos();
       this.targetBpm = bpm;
-      if (this.player) this.player.playbackRate = bpm / this.baseBpm;
+      if (this.player) this.player.playbackRate = this.rate();
+      if (this.playing) { this.seekOffset = pos; this.startCtx = Tone.now(); } // re-baseline, no restart
     }
-    setKeyShift(semitones) {
-      this.keyShift = semitones;
-      if (this.player) this.player.detune = semitones * 100;
+    setKeyShift(semi) {
+      this.keyShift = semi;
+      if (this.player) this.player.detune = semi * 100;
     }
-    play() { if (this.player && this.player.state !== "started") this.player.start(); }
-    stop() { if (this.player && this.player.state === "started") this.player.stop(); }
-    isPlaying() { return this.player && this.player.state === "started"; }
+
+    async play() {
+      if (!this.player) return;
+      await Tone.start();
+      if (this.seekOffset >= this.duration) this.seekOffset = 0;
+      this.startCtx = Tone.now();
+      this.player.start(undefined, this.seekOffset);
+      this.playing = true;
+      this._animate();
+      this.setBtn(true);
+      this.spin(true);
+    }
+    pause() {
+      if (!this.playing) return;
+      this.seekOffset = this.currentPos();
+      try { this.player.stop(); } catch (e) {}
+      this.playing = false;
+      cancelAnimationFrame(this.raf);
+      this.setBtn(false);
+      this.spin(false);
+    }
+    toggle() { this.playing ? this.pause() : this.play(); }
+
+    seekFraction(fr) {
+      if (!this.audioBuffer) return;
+      const off = Math.max(0, Math.min(this.duration, fr * this.duration));
+      if (this.playing) {
+        try { this.player.stop(); } catch (e) {}
+        this.seekOffset = off;
+        this.startCtx = Tone.now();
+        this.player.start(undefined, off);
+      } else {
+        this.seekOffset = off;
+        this.drawWave(off / this.duration);
+        this.inst.updateTime(this.side, off, this.duration);
+      }
+    }
+
+    _animate() {
+      const tick = () => {
+        const pos = this.currentPos();
+        this.drawWave(pos / this.duration);
+        this.inst.updateTime(this.side, pos, this.duration);
+        if (pos >= this.duration) { this.pause(); this.seekOffset = 0; this.drawWave(0); return; }
+        this.raf = requestAnimationFrame(tick);
+      };
+      this.raf = requestAnimationFrame(tick);
+    }
+
+    drawWave(progress) { drawWaveform(this.canvas(), this.peaks, progress); }
+    setBtn(playing) {
+      const b = this.q("#mx_play_" + this.side);
+      if (b) b.textContent = playing ? "⏸ Pause" : "▶ Play";
+    }
+    spin(on) {
+      const tt = this.q("#mx_tt_" + this.side);
+      if (tt) tt.classList.toggle("spinning", on);
+    }
 
     dispose() {
+      cancelAnimationFrame(this.raf);
       if (this.player) { try { this.player.stop(); } catch (e) {} this.player.dispose(); this.player = null; }
-      if (this.buffer) { this.buffer.dispose(); this.buffer = null; }
+      if (this.toneBuffer) { this.toneBuffer.dispose(); this.toneBuffer = null; }
     }
   }
 
   /* ================================================================
-     The mounted mixer instance (owns the DOM + Tone graph)
+     Instance — the whole mixer widget
      ================================================================ */
   class Instance {
-    constructor(container, songs, opts) {
+    constructor(container, opts) {
       this.container = container;
-      this.songs = songs || [];
       this.opts = opts || {};
+      this.audioReady = false;
+      this.deckA = new Deck(this, "a");
+      this.deckB = new Deck(this, "b");
+      this.recording = false;
+      this.recStart = 0;
+    }
+
+    q(sel) { return this.container.querySelector(sel); }
+
+    ensureAudio() {
+      if (this.audioReady || typeof Tone === "undefined") return;
       this.master = new Tone.Gain(1).toDestination();
       this.recorder = new Tone.Recorder();
       this.master.connect(this.recorder);
-      this.deckA = new Deck("A");
-      this.deckB = new Deck("B");
-      this.deckA.gain.connect(this.master);
-      this.deckB.gain.connect(this.master);
-      this.recording = false;
-      this.recStart = 0;
-      this.setCrossfade(0.5);
+      this.deckA.gain = new Tone.Gain(1).connect(this.master);
+      this.deckB.gain = new Tone.Gain(1).connect(this.master);
+      const x = (this.q("#mx_xfade") ? +this.q("#mx_xfade").value : 50) / 100;
+      this.setCrossfade(x);
+      this.audioReady = true;
     }
 
     setCrossfade(x) {
-      // equal-power crossfade
-      this.deckA.gain.gain.value = Math.cos((x * Math.PI) / 2);
-      this.deckB.gain.gain.value = Math.cos(((1 - x) * Math.PI) / 2);
-    }
-
-    songOptions(selectedId) {
-      const opts = ['<option value="">— choose a track —</option>'];
-      this.songs.forEach((s) => {
-        const sel = s.id === selectedId ? " selected" : "";
-        opts.push(`<option value="${esc(s.id)}"${sel}>${esc(s.title)}${s.artist ? " — " + esc(s.artist) : ""}</option>`);
-      });
-      return opts.join("");
+      if (this.deckA.gain) this.deckA.gain.gain.value = Math.cos((x * Math.PI) / 2);
+      if (this.deckB.gain) this.deckB.gain.gain.value = Math.cos(((1 - x) * Math.PI) / 2);
     }
 
     deckHtml(side) {
-      const s = side.toLowerCase();
+      const S = side.toUpperCase();
       return `
-        <div class="deck deck-${s}">
-          <div class="deck-title">Deck ${side}</div>
-          <div class="turntable" id="mx_tt_${s}"><div class="tt-record"><div class="tt-label"></div></div></div>
-          <select id="mx_song_${s}" class="mx-select">${this.songOptions("")}</select>
-          <button class="btn" id="mx_load_${s}">Load</button>
-          <div class="mx-readout" id="mx_read_${s}">BPM: — · Key: —</div>
-          <label class="mx-slider-label">Tempo <span id="mx_bpmval_${s}">—</span> BPM</label>
-          <input type="range" id="mx_bpm_${s}" min="60" max="180" value="120" disabled>
-          <label class="mx-slider-label">Key <span id="mx_keyval_${s}">0</span> st</label>
-          <input type="range" id="mx_key_${s}" min="-6" max="6" value="0" step="1" disabled>
-          <div class="btn-row">
-            <button class="btn secondary" id="mx_play_${s}" disabled>Play</button>
-            <button class="btn secondary" id="mx_stop_${s}" disabled>Stop</button>
+        <div class="deck">
+          <div class="deck-head">
+            <span class="turntable" id="mx_tt_${side}"><span class="tt-record"><span class="tt-label"></span></span></span>
+            <span class="deck-title">Deck ${S}</span>
           </div>
+          <input type="file" accept="audio/*" id="mx_file_${side}" class="mx-file">
+          <div class="mx-url-row">
+            <input type="text" id="mx_url_${side}" class="mx-url" placeholder="…or paste an audio URL or YouTube link">
+            <button class="btn secondary" id="mx_urlbtn_${side}">Load URL</button>
+          </div>
+          <canvas class="mx-wave" id="mx_wave_${side}" width="600" height="70"></canvas>
+          <div class="mx-time"><span id="mx_read_${side}">No track loaded</span><span id="mx_pos_${side}">0:00 / 0:00</span></div>
+          <div class="btn-row">
+            <button class="btn" id="mx_play_${side}" disabled>▶ Play</button>
+          </div>
+          <label class="mx-slider-label">Tempo <b id="mx_bpmval_${side}">—</b> BPM</label>
+          <input type="range" id="mx_bpm_${side}" min="60" max="180" value="120" disabled>
+          <label class="mx-slider-label">Key <b id="mx_keyval_${side}">0</b> st</label>
+          <input type="range" id="mx_key_${side}" min="-6" max="6" value="0" step="1" disabled>
         </div>`;
     }
 
     build() {
-      const noSongs = this.songs.length < 2;
       this.container.innerHTML = `
         <div class="mixer">
-          ${noSongs ? `<p class="muted">Add at least two songs to your profile to start mixing.</p>` : ""}
-          <div class="decks">
-            ${this.deckHtml("A")}
-            ${this.deckHtml("B")}
-          </div>
+          <p class="muted">Upload two tracks, then beat-match with the tempo sliders and blend with the crossfader. Hit record to save the mix.</p>
+          <div class="decks">${this.deckHtml("a")}${this.deckHtml("b")}</div>
           <div class="mixer-center">
-            <button class="btn" id="mx_sync">⇄ Sync B to A</button>
+            <button class="btn" id="mx_sync">⇄ Match Deck B to A</button>
             <label class="mx-slider-label">Crossfader</label>
             <input type="range" id="mx_xfade" min="0" max="100" value="50">
             <div class="mx-xlabels"><span>A</span><span>B</span></div>
-            <div class="btn-row">
-              <button class="btn" id="mx_rec">● Record Mix</button>
-            </div>
+            <div class="btn-row"><button class="btn" id="mx_rec" disabled>● Record Mix</button></div>
             <div class="mx-rec-status" id="mx_recstatus"></div>
           </div>
         </div>`;
       this.wire();
+      drawWaveform(this.q("#mx_wave_a"), null, 0);
+      drawWaveform(this.q("#mx_wave_b"), null, 0);
     }
 
     wire() {
-      const $ = (id) => this.container.querySelector("#" + id);
       ["a", "b"].forEach((s) => {
         const deck = s === "a" ? this.deckA : this.deckB;
-        $("mx_load_" + s).addEventListener("click", () => this.loadDeck(s));
-        $("mx_play_" + s).addEventListener("click", () => this.playDeck(s));
-        $("mx_stop_" + s).addEventListener("click", () => this.stopDeck(s));
-        $("mx_bpm_" + s).addEventListener("input", (e) => {
-          const v = +e.target.value;
-          $("mx_bpmval_" + s).textContent = v;
-          deck.setTargetBpm(v);
+        this.q("#mx_file_" + s).addEventListener("change", (e) => this.importFile(s, e.target.files[0]));
+        this.q("#mx_urlbtn_" + s).addEventListener("click", () => this.importUrl(s, this.q("#mx_url_" + s).value.trim()));
+        this.q("#mx_play_" + s).addEventListener("click", () => deck.toggle());
+        this.q("#mx_bpm_" + s).addEventListener("input", (e) => {
+          this.q("#mx_bpmval_" + s).textContent = e.target.value;
+          deck.setTargetBpm(+e.target.value);
         });
-        $("mx_key_" + s).addEventListener("input", (e) => {
-          const v = +e.target.value;
-          $("mx_keyval_" + s).textContent = v;
-          deck.setKeyShift(v);
+        this.q("#mx_key_" + s).addEventListener("input", (e) => {
+          this.q("#mx_keyval_" + s).textContent = e.target.value;
+          deck.setKeyShift(+e.target.value);
+        });
+        const cv = this.q("#mx_wave_" + s);
+        cv.addEventListener("click", (e) => {
+          const r = cv.getBoundingClientRect();
+          deck.seekFraction((e.clientX - r.left) / r.width);
         });
       });
-      $("mx_xfade").addEventListener("input", (e) => this.setCrossfade(e.target.value / 100));
-      $("mx_sync").addEventListener("click", () => this.sync());
-      $("mx_rec").addEventListener("click", () => this.toggleRecord());
+      this.q("#mx_xfade").addEventListener("input", (e) => this.setCrossfade(e.target.value / 100));
+      this.q("#mx_sync").addEventListener("click", () => this.sync());
+      this.q("#mx_rec").addEventListener("click", () => this.toggleRecord());
     }
 
-    async loadDeck(s) {
-      const $ = (id) => this.container.querySelector("#" + id);
-      const sel = $("mx_song_" + s);
-      const songId = sel.value;
-      if (!songId) return;
-      const song = this.songs.find((x) => x.id === songId);
-      const url = await MusicStore.url(songId);
-      if (!url) { alert("That track's audio isn't on this device."); return; }
-      await Tone.start();
-      $("mx_read_" + s).textContent = "analyzing…";
-      const deck = s === "a" ? this.deckA : this.deckB;
-      const { bpm, key } = await deck.load(song, url);
-      $("mx_read_" + s).textContent = `BPM: ${bpm} · Key: ${key.name}`;
-      const bpmSlider = $("mx_bpm_" + s);
-      bpmSlider.disabled = false; bpmSlider.value = bpm;
-      $("mx_bpmval_" + s).textContent = bpm;
-      const keySlider = $("mx_key_" + s);
-      keySlider.disabled = false; keySlider.value = 0;
-      $("mx_keyval_" + s).textContent = 0;
-      $("mx_play_" + s).disabled = false;
-      $("mx_stop_" + s).disabled = false;
-      const label = this.container.querySelector(`#mx_tt_${s} .tt-label`);
-      if (label) label.textContent = song.title;
+    importFile(s, file) {
+      if (!file) return;
+      return this._import(s, (deck) => deck.loadFile(file));
+    }
+    importUrl(s, url) {
+      if (!url) return;
+      return this._import(s, (deck) => deck.loadUrl(url));
     }
 
-    async playDeck(s) {
-      await Tone.start();
+    async _import(s, loader) {
       const deck = s === "a" ? this.deckA : this.deckB;
-      deck.play();
-      const tt = this.container.querySelector("#mx_tt_" + s);
-      if (tt) tt.classList.add("spinning");
+      this.q("#mx_read_" + s).textContent = "loading…";
+      try {
+        await Tone.start();
+      } catch (e) {}
+      let res;
+      try {
+        res = await loader(deck);
+      } catch (e) {
+        this.q("#mx_read_" + s).textContent = e.message || "Couldn't load that audio.";
+        return;
+      }
+      this.q("#mx_read_" + s).textContent = `${deck.title} — ${res.bpm} BPM · ${res.key.name}`;
+      const label = this.q(`#mx_tt_${s} .tt-label`);
+      if (label) label.textContent = deck.title.slice(0, 12);
+      const bpm = this.q("#mx_bpm_" + s);
+      bpm.disabled = false; bpm.value = res.bpm;
+      this.q("#mx_bpmval_" + s).textContent = res.bpm;
+      const key = this.q("#mx_key_" + s);
+      key.disabled = false; key.value = 0;
+      this.q("#mx_keyval_" + s).textContent = 0;
+      this.q("#mx_play_" + s).disabled = false;
+      this.updateTime(s, 0, deck.duration);
+      // enable recording once at least one deck is loaded
+      if (this.deckA.audioBuffer || this.deckB.audioBuffer) this.q("#mx_rec").disabled = false;
     }
-    stopDeck(s) {
-      const deck = s === "a" ? this.deckA : this.deckB;
-      deck.stop();
-      const tt = this.container.querySelector("#mx_tt_" + s);
-      if (tt) tt.classList.remove("spinning");
+
+    updateTime(s, pos, dur) {
+      const el = this.q("#mx_pos_" + s);
+      if (el) el.textContent = `${fmtTime(pos)} / ${fmtTime(dur)}`;
     }
 
     sync() {
-      const $ = (id) => this.container.querySelector("#" + id);
-      if (!this.deckA.player || !this.deckB.player) return;
-      // match B's tempo to A's current target BPM
-      const targetBpm = this.deckA.targetBpm;
+      if (!this.deckA.audioBuffer || !this.deckB.audioBuffer) return;
+      const targetBpm = Math.round(this.deckA.targetBpm);
       this.deckB.setTargetBpm(targetBpm);
-      $("mx_bpm_b").value = Math.round(targetBpm);
-      $("mx_bpmval_b").textContent = Math.round(targetBpm);
-      // shift B's key toward A's (nearest within ±6 semitones)
+      this.q("#mx_bpm_b").value = targetBpm;
+      this.q("#mx_bpmval_b").textContent = targetBpm;
       let diff = this.deckA.key.root - this.deckB.key.root;
       while (diff > 6) diff -= 12;
       while (diff < -6) diff += 12;
       this.deckB.setKeyShift(diff);
-      $("mx_key_b").value = diff;
-      $("mx_keyval_b").textContent = diff;
+      this.q("#mx_key_b").value = diff;
+      this.q("#mx_keyval_b").textContent = diff;
     }
 
     async toggleRecord() {
-      const $ = (id) => this.container.querySelector("#" + id);
-      const btn = $("mx_rec");
+      const btn = this.q("#mx_rec");
+      const status = this.q("#mx_recstatus");
+      if (typeof Tone === "undefined") return;
       if (!this.recording) {
         await Tone.start();
+        this.ensureAudio();
         this.recorder.start();
         this.recording = true;
         this.recStart = Date.now();
         btn.textContent = "■ Stop & Save";
         btn.classList.add("recording");
-        $("mx_recstatus").textContent = "Recording…";
+        status.textContent = "Recording…";
       } else {
         const blob = await this.recorder.stop();
         this.recording = false;
         btn.textContent = "● Record Mix";
         btn.classList.remove("recording");
-        const duration = Math.round((Date.now() - this.recStart) / 1000);
-        $("mx_recstatus").textContent = "Saving mix…";
+        status.textContent = "Saving mix…";
         const mixId = "mix_" + Date.now();
         await MusicStore.put(mixId, blob);
         const mix = {
           id: mixId,
           date: new Date().toISOString(),
-          duration,
-          deckA: this.deckSnapshot(this.deckA),
-          deckB: this.deckSnapshot(this.deckB),
+          duration: Math.round((Date.now() - this.recStart) / 1000),
+          deckA: this.snapshot(this.deckA),
+          deckB: this.snapshot(this.deckB),
         };
+        status.textContent = "";
         if (this.opts.onSave) this.opts.onSave(mix);
       }
     }
 
-    deckSnapshot(deck) {
-      return deck.song
+    snapshot(deck) {
+      return deck.audioBuffer
         ? {
-            songId: deck.song.id,
-            title: deck.song.title,
-            artist: deck.song.artist || "",
+            title: deck.title,
             baseBpm: deck.baseBpm,
             playBpm: Math.round(deck.targetBpm),
             key: deck.key.name,
@@ -400,29 +512,25 @@ const Mixer = (() => {
       try {
         this.deckA.dispose();
         this.deckB.dispose();
-        if (this.recording) this.recorder.stop();
-        this.recorder.dispose();
-        this.master.dispose();
-      } catch (e) {
-        /* ignore teardown errors */
-      }
+        if (this.recording && this.recorder) this.recorder.stop();
+        if (this.recorder) this.recorder.dispose();
+        if (this.master) this.master.dispose();
+      } catch (e) {}
     }
   }
 
   let current = null;
   return {
     available() { return typeof Tone !== "undefined"; },
-    async mount(container, songs, opts) {
-      if (!this.available()) {
-        container.innerHTML = `<p class="muted">The mixer needs Tone.js, which failed to load (check your connection).</p>`;
-        return;
-      }
+    mount(container, opts) {
       if (current) current.dispose();
-      current = new Instance(container, songs, opts);
+      current = new Instance(container, opts);
       current.build();
+      if (!this.available()) {
+        const s = container.querySelector("#mx_recstatus");
+        if (s) s.textContent = "Playback needs Tone.js (failed to load); waveforms + BPM still work.";
+      }
     },
-    unmount() {
-      if (current) { current.dispose(); current = null; }
-    },
+    unmount() { if (current) { current.dispose(); current = null; } },
   };
 })();

@@ -28,19 +28,62 @@ function fmtDateTime(d) {
 function userLink(u) {
   return `<a href="#/profile/${u.id}">${esc(u.name)}</a>`;
 }
+
+/* ---- recorded-mix rendering (used on the profile + mixer page) --- */
+function mixDeckHtml(d) {
+  return d
+    ? `<div class="mix-rec">
+         <div class="mix-vinyl"></div>
+         <div>
+           <div class="mix-track">${esc(d.title)}</div>
+           <div class="mix-meta">${d.playBpm || d.baseBpm || "?"} BPM &middot; ${esc(d.key || "—")}${
+        d.keyShift ? ` (${d.keyShift > 0 ? "+" : ""}${d.keyShift} st)` : ""
+      }</div>
+         </div>
+       </div>`
+    : `<div class="mix-rec muted">(empty deck)</div>`;
+}
+function mixDur(s) {
+  return s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "";
+}
+function mixesListHtml(mixes, ownerId, isMe) {
+  if (!mixes || !mixes.length) return `<p class="muted">No mixes yet.</p>`;
+  return mixes
+    .map(
+      (m) => `<div class="mix-card">
+        <div class="mix-head"><b>Mix</b> <span class="meta">&middot; ${fmtDateTime(m.date)}${
+        m.duration ? " &middot; " + mixDur(m.duration) : ""
+      }</span></div>
+        <div class="mix-decks">${mixDeckHtml(m.deckA)}<span class="mix-plus">&#43;</span>${mixDeckHtml(m.deckB)}</div>
+        <audio controls preload="none" data-song-id="${esc(m.id)}"></audio>
+        ${isMe ? `<div class="btn-row">
+          <button class="btn" onclick="postMix('${esc(m.id)}')">Post to Feed</button>
+          <button class="btn danger" onclick="deleteMix('${ownerId}','${esc(m.id)}')">Delete</button>
+        </div>` : ""}
+      </div>`
+    )
+    .join("");
+}
 /* Only allow real image links so a bulletin can't inject javascript: URLs. */
 function safeImageUrl(url) {
   const u = String(url == null ? "" : url).trim();
   return /^https?:\/\//i.test(u) || /^data:image\//i.test(u) ? u : "";
 }
-/* Shared bulletin body: optional text + optional image. */
+/* Shared bulletin body: optional text + optional image + optional mix. */
 function bulletinBody(b) {
   const text = b.text ? `<div>${esc(b.text)}</div>` : "";
   const img = safeImageUrl(b.image);
   const image = img
     ? `<div class="bulletin-img"><img src="${esc(img)}" alt="" loading="lazy" onerror="this.parentNode.style.display='none'"></div>`
     : "";
-  return text + image;
+  const mix = b.mix
+    ? `<div class="bulletin-mix">
+         <div class="bmix-label">&#127911; Mix</div>
+         <div class="mix-decks">${mixDeckHtml(b.mix.deckA)}<span class="mix-plus">&#43;</span>${mixDeckHtml(b.mix.deckB)}</div>
+         <audio controls preload="none" data-song-id="${esc(b.mix.id)}"></audio>
+       </div>`
+    : "";
+  return text + image + mix;
 }
 
 /* The compose box: a caption, an image URL, or an uploaded photo.
@@ -323,6 +366,7 @@ function viewHome() {
       </div>
     </div>`;
   app.innerHTML = chrome("Home", body);
+  hydrateAudio(); // posted-mix players
 }
 
 function postBulletin() {
@@ -436,42 +480,7 @@ function viewProfile(id) {
     : "";
 
   // recorded mixes (Spotify-style entries with a timestamp)
-  const mixes = u.mixes || [];
-  const mixDeckHtml = (d) =>
-    d
-      ? `<div class="mix-rec">
-           <div class="mix-vinyl"></div>
-           <div>
-             <div class="mix-track">${esc(d.title)}</div>
-             ${d.artist ? `<div class="muted">${esc(d.artist)}</div>` : ""}
-             <div class="mix-meta">${d.playBpm || d.baseBpm || "?"} BPM &middot; ${esc(d.key || "—")}${
-          d.keyShift ? ` (${d.keyShift > 0 ? "+" : ""}${d.keyShift} st)` : ""
-        }</div>
-           </div>
-         </div>`
-      : `<div class="mix-rec muted">(empty deck)</div>`;
-  const fmtDur = (s) => (s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "");
-  const mixesHtml = mixes.length
-    ? mixes
-        .map(
-          (m) => `<div class="mix-card">
-            <div class="mix-head"><b>Mix</b> <span class="meta">&middot; ${fmtDateTime(m.date)}${
-            m.duration ? " &middot; " + fmtDur(m.duration) : ""
-          }</span></div>
-            <div class="mix-decks">${mixDeckHtml(m.deckA)}<span class="mix-plus">&#43;</span>${mixDeckHtml(m.deckB)}</div>
-            <audio controls preload="none" data-song-id="${esc(m.id)}"></audio>
-            ${isMe ? `<div class="btn-row"><button class="btn danger" onclick="deleteMix('${u.id}','${esc(m.id)}')">Delete</button></div>` : ""}
-          </div>`
-        )
-        .join("")
-    : `<p class="muted">No mixes yet.</p>`;
-
-  const mixerBox = isMe
-    ? `<div class="box">
-         <div class="box-title">DJ Mixer</div>
-         <div class="box-body"><div id="djMixer"><p class="muted">Loading mixer…</p></div></div>
-       </div>`
-    : "";
+  const mixesHtml = mixesListHtml(u.mixes || [], u.id, isMe);
 
   const body = `
     <div class="columns">
@@ -527,11 +536,12 @@ function viewProfile(id) {
           </div>
         </div>
 
-        ${mixerBox}
-
         <div class="box">
           <div class="box-title">${esc(u.name)}'s Mixes</div>
-          <div class="box-body">${mixesHtml}</div>
+          <div class="box-body">
+            ${isMe ? `<p><a class="btn" href="#/mixer">Open the DJ Mixer &raquo;</a></p>` : ""}
+            ${mixesHtml}
+          </div>
         </div>
 
         <div class="box">
@@ -555,17 +565,6 @@ function viewProfile(id) {
   app.innerHTML = chrome(isMe ? "My Profile" : "", body);
   applyBg(u.bgColor, u.bgImage); // this profile's custom background
   hydrateAudio();
-  if (isMe && typeof Mixer !== "undefined") {
-    const el = document.getElementById("djMixer");
-    if (el) {
-      Mixer.mount(el, u.songs || [], {
-        onSave: (mix) => {
-          DB.addMix(u.id, mix);
-          viewProfile(u.id); // re-render so the new mix appears
-        },
-      });
-    }
-  }
 }
 
 /* Load each track's blob from IndexedDB and wire it to its <audio>. */
@@ -640,7 +639,49 @@ async function deleteMix(userId, mixId) {
   if (!confirm("Delete this mix?")) return;
   try { await MusicStore.remove(mixId); } catch (e) {}
   DB.removeMix(userId, mixId);
-  viewProfile(userId);
+  viewMixer();
+}
+
+function postMix(mixId) {
+  const me = Session.current();
+  const mix = (me.mixes || []).find((m) => m.id === mixId);
+  if (!mix) return;
+  DB.addBulletin(me.id, "🎧 I made a new mix!", "", mix);
+  if (confirm("Posted your mix to the feed! View the feed now?")) go("#/bulletins");
+}
+
+/* ---- DJ Mixer page --------------------------------------------- */
+function viewMixer() {
+  if (!requireLogin()) return;
+  const me = Session.current();
+  const body = `
+    <div class="box">
+      <div class="box-title">DJ Mixer</div>
+      <div class="box-body"><div id="djMixer"><p class="muted">Loading mixer…</p></div></div>
+    </div>
+    <div class="box">
+      <div class="box-title">My Mixes</div>
+      <div class="box-body">
+        <p><a href="#/bulletins">See the bulletin feed &raquo;</a></p>
+        ${mixesListHtml(me.mixes || [], me.id, true)}
+      </div>
+    </div>`;
+  app.innerHTML = chrome("Home", body);
+  hydrateAudio(); // wire up saved-mix players
+  if (typeof Mixer !== "undefined") {
+    const el = document.getElementById("djMixer");
+    if (el) {
+      Mixer.mount(el, {
+        onSave: (mix) => {
+          DB.addMix(me.id, mix);
+          viewMixer(); // re-render so the new mix appears
+        },
+      });
+    }
+  } else {
+    const el = document.getElementById("djMixer");
+    if (el) el.innerHTML = `<p class="muted">The mixer engine (Tone.js) failed to load — check your connection and refresh.</p>`;
+  }
 }
 
 function friend(id) { DB.addFriend(Session.current().id, id); viewProfile(id); }
@@ -789,6 +830,7 @@ function viewBulletins() {
       <div class="box-body">${feedHtml}</div>
     </div>`;
   app.innerHTML = chrome("Bulletins", body);
+  hydrateAudio(); // posted-mix players
 }
 function postBulletinB() {
   const input = readBulletinInput();
@@ -1051,14 +1093,16 @@ function router() {
   switch (route) {
     case "login": return viewLogin();
     case "signup": return viewSignup();
-    case "home": return viewHome();
+    case "home": return viewMixer();
+    case "feed": return viewHome();
     case "profile": return viewProfile(parts[1]);
     case "friends": return viewFriends(parts[1]);
     case "search": return viewSearch(parts[1] ? decodeURIComponent(parts[1]) : "");
     case "bulletins": return viewBulletins();
+    case "mixer": return viewMixer();
     case "settings": return viewSettings();
     default:
-      return Session.current() ? viewHome() : viewLogin();
+      return Session.current() ? viewMixer() : viewLogin();
   }
 }
 

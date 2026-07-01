@@ -3,6 +3,9 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const { execFile } = require("child_process");
 const db = require("./db");
 
 const PORT = process.env.PORT || 8088;
@@ -44,6 +47,127 @@ function readBody(req) {
       }
     });
     req.on("error", reject);
+  });
+}
+
+/* Proxy a remote audio file so the browser can decode it without CORS.
+   Basic SSRF guard + size/type limits — this is a hobby app, not a
+   hardened open proxy. */
+const MAX_AUDIO_BYTES = 30 * 1024 * 1024; // 30 MB
+function isBlockedHost(hostname) {
+  const h = hostname.toLowerCase();
+  return (
+    h === "localhost" ||
+    h === "0.0.0.0" ||
+    h.endsWith(".local") ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^169\.254\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(h) ||
+    h === "::1"
+  );
+}
+async function fetchAudio(target, res) {
+  let url;
+  try {
+    url = new URL(target);
+  } catch (e) {
+    return sendJSON(res, 400, { error: "Provide a valid audio URL." });
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return sendJSON(res, 400, { error: "Only http(s) URLs are allowed." });
+  }
+  if (isBlockedHost(url.hostname)) {
+    return sendJSON(res, 400, { error: "That host isn't allowed." });
+  }
+  let upstream;
+  try {
+    upstream = await fetch(url.href, {
+      redirect: "follow",
+      headers: { "User-Agent": "beefriend-mixer/1.0", Accept: "audio/*,*/*" },
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch (e) {
+    return sendJSON(res, 502, { error: "Couldn't reach that URL." });
+  }
+  if (!upstream.ok) {
+    return sendJSON(res, 502, { error: `Remote returned ${upstream.status}.` });
+  }
+  const type = upstream.headers.get("content-type") || "application/octet-stream";
+  if (/^(text|application\/(json|xml|xhtml|javascript)|image)/i.test(type)) {
+    return sendJSON(res, 415, {
+      error: "That link isn't a direct audio file (a YouTube page won't work — use a direct .mp3/.wav link).",
+    });
+  }
+  const len = Number(upstream.headers.get("content-length") || 0);
+  if (len && len > MAX_AUDIO_BYTES) {
+    return sendJSON(res, 413, { error: "That audio file is too large (max 30 MB)." });
+  }
+  const buf = Buffer.from(await upstream.arrayBuffer());
+  if (buf.length > MAX_AUDIO_BYTES) {
+    return sendJSON(res, 413, { error: "That audio file is too large (max 30 MB)." });
+  }
+  res.writeHead(200, { "Content-Type": type, "Content-Length": buf.length });
+  res.end(buf);
+}
+
+/* Extract audio from a video page (YouTube, etc.) with yt-dlp + ffmpeg.
+   LOCAL USE ONLY: yt-dlp/ffmpeg must be installed, it won't work on hosts
+   whose IPs YouTube blocks (Render), and it is against YouTube's ToS. */
+function ytAudio(target, res) {
+  let url;
+  try {
+    url = new URL(target);
+  } catch (e) {
+    return sendJSON(res, 400, { error: "Provide a valid video URL." });
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return sendJSON(res, 400, { error: "Only http(s) URLs are allowed." });
+  }
+  if (isBlockedHost(url.hostname)) {
+    return sendJSON(res, 400, { error: "That host isn't allowed." });
+  }
+  const id = crypto.randomBytes(8).toString("hex");
+  const outTmpl = path.join(os.tmpdir(), `bf_${id}.%(ext)s`);
+  const outMp3 = path.join(os.tmpdir(), `bf_${id}.mp3`);
+  const cleanup = () => {
+    fs.readdir(os.tmpdir(), (e, files) => {
+      if (e) return;
+      files
+        .filter((f) => f.startsWith(`bf_${id}.`))
+        .forEach((f) => fs.unlink(path.join(os.tmpdir(), f), () => {}));
+    });
+  };
+  const args = [
+    "-x", "--audio-format", "mp3", "--audio-quality", "5",
+    "--no-playlist", "--no-progress", "-o", outTmpl, url.href,
+  ];
+  execFile("yt-dlp", args, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+    if (err) {
+      cleanup();
+      if (err.code === "ENOENT") {
+        return sendJSON(res, 501, {
+          error: "YouTube import needs yt-dlp installed — it only works when running locally.",
+        });
+      }
+      const tail = String(stderr || err.message).split("\n").filter(Boolean).slice(-2).join(" ");
+      const blocked = /Sign in|not a bot|unavailable|Private|blocked|age/i.test(tail);
+      return sendJSON(res, 502, {
+        error: blocked
+          ? "YouTube refused this video (blocked, private, or bot-check). Try another link or run locally."
+          : "Extraction failed: " + tail.slice(0, 240),
+      });
+    }
+    fs.readFile(outMp3, (rerr, data) => {
+      cleanup();
+      if (rerr) return sendJSON(res, 502, { error: "Could not read the extracted audio." });
+      if (data.length > MAX_AUDIO_BYTES) {
+        return sendJSON(res, 413, { error: "Extracted audio is too large (max 30 MB)." });
+      }
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": data.length });
+      res.end(data);
+    });
   });
 }
 
@@ -89,6 +213,18 @@ async function handleApi(req, res, urlPath) {
   if (method === "POST" && urlPath === "/api/reset") {
     const body = await readBody(req);
     return sendJSON(res, 200, await db.reset(body.users || []));
+  }
+
+  // GET /api/fetch-audio?url=... -> proxy a remote audio file (avoids CORS)
+  if (method === "GET" && urlPath === "/api/fetch-audio") {
+    const target = new URL(req.url, "http://localhost").searchParams.get("url");
+    return fetchAudio(target, res);
+  }
+
+  // GET /api/youtube-audio?url=... -> extract audio via yt-dlp (local only)
+  if (method === "GET" && urlPath === "/api/youtube-audio") {
+    const target = new URL(req.url, "http://localhost").searchParams.get("url");
+    return ytAudio(target, res);
   }
 
   return sendJSON(res, 404, { error: "Unknown API route" });
