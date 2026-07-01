@@ -96,11 +96,11 @@ function viewLogin() {
   app.innerHTML = chrome("Login", body);
 }
 
-function doLogin() {
+async function doLogin() {
   const u = document.getElementById("li_user").value.trim();
   const p = document.getElementById("li_pass").value;
   try {
-    Session.login(u, p);
+    await Session.login(u, p);
     go("#/home");
   } catch (e) {
     document.getElementById("formMsg").innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -136,7 +136,7 @@ function viewSignup() {
   app.innerHTML = chrome("Sign Up", body);
 }
 
-function doSignup() {
+async function doSignup() {
   const fields = {
     name: document.getElementById("su_name").value.trim(),
     username: document.getElementById("su_user").value.trim(),
@@ -150,8 +150,8 @@ function doSignup() {
     return;
   }
   try {
-    const u = DB.createUser(fields);
-    Session.login(u.username, u.password);
+    const u = await DB.createUser(fields);
+    await Session.login(u.username, fields.password);
     go("#/home");
   } catch (e) {
     msg.innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -882,9 +882,14 @@ function saveSettings() {
   });
   go("#/profile/" + u.id);
 }
-function resetEverything() {
-  if (confirm("Reset all demo data and log out?")) {
-    DB.reset();
+async function resetEverything() {
+  if (confirm("Reset ALL shared data for everyone and log out?")) {
+    try {
+      await DB.reset();
+    } catch (e) {
+      alert("Reset failed: " + e.message);
+      return;
+    }
     go("#/login");
     location.reload();
   }

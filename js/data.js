@@ -136,17 +136,36 @@ function avatarFor(name, color) {
   return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
 }
 
-/* ---- Storage API ------------------------------------------------- */
+/* ---- Storage API -------------------------------------------------
+   Data lives in a shared Postgres database behind a tiny JSON API
+   (see server.js / db.js). The client keeps an in-memory cache so the
+   rest of the app can keep reading synchronously; writes update the
+   cache immediately and are persisted to the server in the background.
+   ------------------------------------------------------------------- */
+
+/* Small fetch helper. Throws Error(message) on non-2xx responses. */
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* empty body is fine */
+  }
+  if (!res.ok) {
+    throw new Error((data && data.error) || `Request failed (${res.status})`);
+  }
+  return data;
+}
+
 const DB = {
-  load() {
-    let raw = localStorage.getItem(DB_KEY);
-    if (!raw) {
-      const seeded = seedDB();
-      localStorage.setItem(DB_KEY, JSON.stringify(seeded));
-      return seeded;
-    }
-    const db = JSON.parse(raw);
-    // normalize older records that predate the music feature
+  _cache: { users: [] },
+
+  _normalize(db) {
     db.users.forEach((u) => {
       if (!Array.isArray(u.songs)) u.songs = [];
       if (typeof u.autoplay !== "boolean") u.autoplay = true;
@@ -155,34 +174,65 @@ const DB = {
     });
     return db;
   },
-  save(db) {
-    localStorage.setItem(DB_KEY, JSON.stringify(db));
+
+  /* Boot: pull the shared world; seed it the first time it's empty. */
+  async init() {
+    let state = await api("GET", "/api/state");
+    if (!state.users.length) {
+      state = await api("POST", "/api/seed", seedDB());
+    }
+    this._cache = this._normalize(state);
+    return this._cache;
   },
-  reset() {
-    localStorage.removeItem(DB_KEY);
+
+  /* Re-pull the world in the background so friends' changes show up
+     on the next navigation. Failures are non-fatal. */
+  async refresh() {
+    try {
+      const state = await api("GET", "/api/state");
+      this._cache = this._normalize(state);
+    } catch (e) {
+      console.warn("[db] refresh failed:", e.message);
+    }
+  },
+
+  /* Persist one cached user to the server (fire-and-forget). */
+  _sync(id) {
+    const u = this.getUser(id);
+    if (!u) return;
+    api("PATCH", "/api/users/" + encodeURIComponent(id), { user: u }).catch(
+      (e) => console.warn("[db] sync failed for " + id + ":", e.message)
+    );
+  },
+
+  load() {
+    return this._cache;
+  },
+
+  async reset() {
+    const state = await api("POST", "/api/reset", seedDB());
+    this._cache = this._normalize(state);
     localStorage.removeItem(SESSION_KEY);
   },
 
   getUser(id) {
-    return this.load().users.find((u) => u.id === id) || null;
+    return this._cache.users.find((u) => u.id === id) || null;
   },
   getUserByUsername(username) {
     return (
-      this.load().users.find(
+      this._cache.users.find(
         (u) => u.username.toLowerCase() === username.toLowerCase()
       ) || null
     );
   },
   allUsers() {
-    return this.load().users;
+    return this._cache.users;
   },
 
-  createUser(fields) {
-    const db = this.load();
-    if (this.getUserByUsername(fields.username)) {
-      throw new Error("That username is already taken.");
-    }
-    const id = "u" + (db.users.length + 1) + "_" + Date.now();
+  /* Create a new account. Persists to the server before returning so a
+     username clash surfaces as a thrown error. */
+  async createUser(fields) {
+    const id = "u" + Date.now() + Math.floor(Math.random() * 1000);
     const user = {
       id,
       username: fields.username,
@@ -207,96 +257,98 @@ const DB = {
       bgColor: "",
       bgImage: "",
     };
-    db.users.push(user);
+    await api("POST", "/api/users", { user }); // throws on duplicate username
+    this._cache.users.push(user);
     // Tom adds them back
-    const tom = db.users.find((u) => u.id === "u1");
-    if (tom && !tom.friends.includes(id)) tom.friends.push(id);
-    this.save(db);
+    const tom = this.getUser("u1");
+    if (tom && !tom.friends.includes(id)) {
+      tom.friends.push(id);
+      this._sync("u1");
+    }
     return user;
   },
 
   updateUser(id, fields) {
-    const db = this.load();
-    const u = db.users.find((x) => x.id === id);
+    const u = this.getUser(id);
     if (!u) return;
     Object.assign(u, fields);
-    this.save(db);
+    this._sync(id);
   },
 
   addFriend(aId, bId) {
     if (aId === bId) return;
-    const db = this.load();
-    const a = db.users.find((u) => u.id === aId);
-    const b = db.users.find((u) => u.id === bId);
+    const a = this.getUser(aId);
+    const b = this.getUser(bId);
     if (!a || !b) return;
     if (!a.friends.includes(bId)) a.friends.push(bId);
     if (!b.friends.includes(aId)) b.friends.push(aId);
-    this.save(db);
+    this._sync(aId);
+    this._sync(bId);
   },
 
   removeFriend(aId, bId) {
-    const db = this.load();
-    const a = db.users.find((u) => u.id === aId);
-    const b = db.users.find((u) => u.id === bId);
+    const a = this.getUser(aId);
+    const b = this.getUser(bId);
     if (a) a.friends = a.friends.filter((f) => f !== bId);
     if (b) b.friends = b.friends.filter((f) => f !== aId);
-    this.save(db);
+    if (a) this._sync(aId);
+    if (b) this._sync(bId);
   },
 
   addTestimonial(targetId, fromId, text) {
-    const db = this.load();
-    const t = db.users.find((u) => u.id === targetId);
+    const t = this.getUser(targetId);
     if (!t) return;
     t.testimonials.unshift({
       from: fromId,
       date: new Date().toISOString().slice(0, 10),
       text,
     });
-    this.save(db);
+    this._sync(targetId);
   },
 
   addBulletin(userId, text) {
-    const db = this.load();
-    const u = db.users.find((x) => x.id === userId);
+    const u = this.getUser(userId);
     if (!u) return;
     u.bulletins.unshift({
       date: new Date().toISOString().slice(0, 10),
       text,
     });
-    this.save(db);
+    this._sync(userId);
   },
 
   addSong(userId, song) {
-    const db = this.load();
-    const u = db.users.find((x) => x.id === userId);
+    const u = this.getUser(userId);
     if (!u) return;
     if (!Array.isArray(u.songs)) u.songs = [];
     u.songs.push(song); // { id, title, artist }
-    this.save(db);
+    this._sync(userId);
   },
 
   removeSong(userId, songId) {
-    const db = this.load();
-    const u = db.users.find((x) => x.id === userId);
+    const u = this.getUser(userId);
     if (!u) return;
     u.songs = (u.songs || []).filter((s) => s.id !== songId);
-    this.save(db);
+    this._sync(userId);
   },
 };
 
-/* ---- Session API ------------------------------------------------- */
+/* ---- Session API -------------------------------------------------
+   The session pointer (who is logged in on this device) stays in
+   localStorage; credentials are verified server-side.
+   ------------------------------------------------------------------- */
 const Session = {
   current() {
     const id = localStorage.getItem(SESSION_KEY);
     return id ? DB.getUser(id) : null;
   },
-  login(username, password) {
-    const u = DB.getUserByUsername(username);
-    if (!u || u.password !== password) {
-      throw new Error("Invalid username or password.");
-    }
-    localStorage.setItem(SESSION_KEY, u.id);
-    return u;
+  async login(username, password) {
+    const { user } = await api("POST", "/api/login", { username, password });
+    // make sure the freshly-verified user is present in the cache
+    const i = DB._cache.users.findIndex((u) => u.id === user.id);
+    if (i === -1) DB._cache.users.push(user);
+    else DB._cache.users[i] = user;
+    localStorage.setItem(SESSION_KEY, user.id);
+    return user;
   },
   logout() {
     localStorage.removeItem(SESSION_KEY);
