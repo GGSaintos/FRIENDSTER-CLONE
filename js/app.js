@@ -660,6 +660,10 @@ function viewMixer() {
       <div class="box-body"><div id="djMixer"><p class="muted">Loading mixer…</p></div></div>
     </div>
     <div class="box">
+      <div class="box-title">MIDI Controller (DDJ-FLX4 &amp; others)</div>
+      <div class="box-body"><div id="midiPanel"></div></div>
+    </div>
+    <div class="box">
       <div class="box-title">My Mixes</div>
       <div class="box-body">
         <p><a href="#/bulletins">See the bulletin feed &raquo;</a></p>
@@ -668,6 +672,10 @@ function viewMixer() {
     </div>`;
   app.innerHTML = chrome("Home", body);
   hydrateAudio(); // wire up saved-mix players
+  if (typeof MIDIControl !== "undefined") {
+    const mp = document.getElementById("midiPanel");
+    if (mp) MIDIControl.mount(mp);
+  }
   if (typeof Mixer !== "undefined") {
     const el = document.getElementById("djMixer");
     if (el) {

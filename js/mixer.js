@@ -193,6 +193,7 @@ const Mixer = (() => {
       this.key = { root: 0, mode: "major", name: "—" };
       this.keyShift = 0;
       this.title = "";
+      this.coverUrl = null; // video thumbnail, when imported from a link
       this.playing = false;
       this.seekOffset = 0;
       this.startCtx = 0;
@@ -216,6 +217,7 @@ const Mixer = (() => {
     rate() { return this.targetBpm / this.baseBpm; }
 
     async loadFile(file) {
+      this.coverUrl = null;
       const arr = await file.arrayBuffer();
       return this._load(arr, file.name.replace(/\.[^.]+$/, ""));
     }
@@ -231,7 +233,13 @@ const Mixer = (() => {
       }
       const arr = await res.arrayBuffer();
       let title = isVideo ? "video import" : "imported track";
-      if (!isVideo) {
+      this.coverUrl = null;
+      if (isVideo) {
+        const t = res.headers.get("X-Video-Title");
+        if (t) title = decodeURIComponent(t) || title;
+        const thumb = res.headers.get("X-Video-Thumbnail");
+        if (thumb) this.coverUrl = decodeURIComponent(thumb) || null;
+      } else {
         try {
           title = decodeURIComponent(url.split("?")[0].split("/").pop()).replace(/\.[^.]+$/, "") || title;
         } catch (e) {}
@@ -339,6 +347,23 @@ const Mixer = (() => {
       this.seekOffset = Math.max(0, Math.min(this.duration, pos));
       this.render(this.seekOffset);
       this.inst.updateTime(this.side, this.seekOffset, this.duration);
+    }
+
+    /* Relative seek by dt seconds (jog wheel). */
+    scrub(dt) {
+      if (!this.audioBuffer) return;
+      const pos = (this.playing ? this.currentPos() : this.seekOffset) + dt;
+      const clamped = Math.max(0, Math.min(this.duration, pos));
+      if (this.playing) {
+        try { this.player.stop(); } catch (e) {}
+        this.seekOffset = clamped;
+        this.startCtx = Tone.now();
+        this.player.start(undefined, clamped);
+        this.render(clamped);
+        this.inst.updateTime(this.side, clamped, this.duration);
+      } else {
+        this.setSeek(clamped);
+      }
     }
 
     beatInterval() { return 60 / this.baseBpm; }
@@ -503,7 +528,8 @@ const Mixer = (() => {
         <div class="deck">
           <div class="deck-head">
             <span class="turntable" id="mx_tt_${side}"><span class="tt-record"><span class="tt-label"></span></span></span>
-            <span class="deck-title">Deck ${S}</span>
+            <img class="mx-cover" id="mx_cover_${side}" alt="cover art" style="display:none">
+            <span class="deck-title" id="mx_name_${side}">Deck ${S}</span>
           </div>
           <input type="file" accept="audio/*" id="mx_file_${side}" class="mx-file">
           <div class="mx-url-row">
@@ -640,9 +666,22 @@ const Mixer = (() => {
         this.q("#mx_read_" + s).textContent = e.message || "Couldn't load that audio.";
         return;
       }
-      this.q("#mx_read_" + s).textContent = `${deck.title} — ${res.bpm} BPM · ${res.key.name}`;
+      this.q("#mx_read_" + s).textContent = `${res.bpm} BPM · ${res.key.name}`;
+      const name = this.q("#mx_name_" + s);
+      if (name) name.textContent = deck.title;
       const label = this.q(`#mx_tt_${s} .tt-label`);
       if (label) label.textContent = deck.title.slice(0, 12);
+      const cover = this.q("#mx_cover_" + s);
+      if (cover) {
+        if (deck.coverUrl) {
+          cover.src = deck.coverUrl;
+          cover.style.display = "";
+          cover.onerror = () => { cover.style.display = "none"; };
+        } else {
+          cover.removeAttribute("src");
+          cover.style.display = "none";
+        }
+      }
       const bpm = this.q("#mx_bpm_" + s);
       bpm.disabled = false; bpm.value = res.bpm;
       this.q("#mx_bpmval_" + s).textContent = res.bpm;
@@ -733,8 +772,55 @@ const Mixer = (() => {
   }
 
   let current = null;
+
+  // Functions a MIDI controller (e.g. DDJ-FLX4) can drive. kind:
+  //   button = trigger on press, range = 0..1 fader/knob, jog = relative.
+  const MIDI_TARGETS = [
+    { id: "playA", label: "Deck A · Play/Pause", kind: "button" },
+    { id: "playB", label: "Deck B · Play/Pause", kind: "button" },
+    { id: "volA", label: "Deck A · Volume", kind: "range" },
+    { id: "volB", label: "Deck B · Volume", kind: "range" },
+    { id: "cross", label: "Crossfader", kind: "range" },
+    { id: "tempoA", label: "Deck A · Tempo", kind: "range" },
+    { id: "tempoB", label: "Deck B · Tempo", kind: "range" },
+    { id: "keyA", label: "Deck A · Key", kind: "range" },
+    { id: "keyB", label: "Deck B · Key", kind: "range" },
+    { id: "fxA", label: "Deck A · Echo/Verb", kind: "button" },
+    { id: "fxB", label: "Deck B · Echo/Verb", kind: "button" },
+    { id: "jogA", label: "Deck A · Jog/Seek", kind: "jog" },
+    { id: "jogB", label: "Deck B · Jog/Seek", kind: "jog" },
+  ];
+
+  // Apply a control action to the live mixer. v = 0..1 (range),
+  // delta = seconds (jog). Also reflects the change in the on-screen control.
+  function applyControl(id, v, delta) {
+    const inst = current;
+    if (!inst) return;
+    const q = (sel) => inst.q(sel);
+    const A = inst.deckA, B = inst.deckB;
+    const setRange = (sel, val) => { const el = q(sel); if (el) el.value = val; };
+    const setText = (sel, val) => { const el = q(sel); if (el) el.textContent = val; };
+    switch (id) {
+      case "playA": A.toggle(); break;
+      case "playB": B.toggle(); break;
+      case "volA": A.setVolume(v); setRange("#mx_vol_a", v * 100); break;
+      case "volB": B.setVolume(v); setRange("#mx_vol_b", v * 100); break;
+      case "cross": inst.setCrossfade(v); setRange("#mx_xfade", v * 100); break;
+      case "tempoA": { const bpm = Math.round(60 + v * 120); A.setTargetBpm(bpm); setRange("#mx_bpm_a", bpm); setText("#mx_bpmval_a", bpm); break; }
+      case "tempoB": { const bpm = Math.round(60 + v * 120); B.setTargetBpm(bpm); setRange("#mx_bpm_b", bpm); setText("#mx_bpmval_b", bpm); break; }
+      case "keyA": { const s = Math.round(-6 + v * 12); A.setKeyShift(s); setRange("#mx_key_a", s); setText("#mx_keyval_a", s); break; }
+      case "keyB": { const s = Math.round(-6 + v * 12); B.setKeyShift(s); setRange("#mx_key_b", s); setText("#mx_keyval_b", s); break; }
+      case "fxA": A.triggerFx(); break;
+      case "fxB": B.triggerFx(); break;
+      case "jogA": A.scrub(delta); break;
+      case "jogB": B.scrub(delta); break;
+    }
+  }
+
   return {
     available() { return typeof Tone !== "undefined"; },
+    MIDI_TARGETS,
+    apply: applyControl,
     mount(container, opts) {
       if (current) current.dispose();
       current = new Instance(container, opts);

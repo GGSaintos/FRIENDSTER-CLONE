@@ -131,6 +131,7 @@ function ytAudio(target, res) {
   const id = crypto.randomBytes(8).toString("hex");
   const outTmpl = path.join(os.tmpdir(), `bf_${id}.%(ext)s`);
   const outMp3 = path.join(os.tmpdir(), `bf_${id}.mp3`);
+  const infoPath = path.join(os.tmpdir(), `bf_${id}.info.json`);
   const cleanup = () => {
     fs.readdir(os.tmpdir(), (e, files) => {
       if (e) return;
@@ -141,7 +142,8 @@ function ytAudio(target, res) {
   };
   const args = [
     "-x", "--audio-format", "mp3", "--audio-quality", "5",
-    "--no-playlist", "--no-progress", "-o", outTmpl, url.href,
+    "--no-playlist", "--no-progress", "--write-info-json",
+    "-o", outTmpl, url.href,
   ];
   console.log(`[yt] extracting: ${url.href}`);
   execFile("yt-dlp", args, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -162,13 +164,26 @@ function ytAudio(target, res) {
       });
     }
     fs.readFile(outMp3, (rerr, data) => {
+      // read title + thumbnail from the info json before cleanup
+      let title = "", thumb = "";
+      try {
+        const info = JSON.parse(fs.readFileSync(infoPath, "utf8"));
+        title = info.title || "";
+        thumb = info.thumbnail || "";
+      } catch (e) {}
       cleanup();
       if (rerr) return sendJSON(res, 502, { error: "Could not read the extracted audio." });
       if (data.length > MAX_AUDIO_BYTES) {
         return sendJSON(res, 413, { error: "That track is too long (over 60 MB of audio)." });
       }
-      console.log(`[yt] ok: ${url.href} (${(data.length / 1048576).toFixed(1)} MB)`);
-      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": data.length });
+      console.log(`[yt] ok: ${title || url.href} (${(data.length / 1048576).toFixed(1)} MB)`);
+      res.writeHead(200, {
+        "Content-Type": "audio/mpeg",
+        "Content-Length": data.length,
+        // header values must be ASCII — URL-encode; the client decodes.
+        "X-Video-Title": encodeURIComponent(title),
+        "X-Video-Thumbnail": encodeURIComponent(thumb),
+      });
       res.end(data);
     });
   });

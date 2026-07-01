@@ -216,6 +216,14 @@ label.field .opt { color: #999; font-weight: normal; font-size: 11px; }
 }
 .btn.mx-fx { padding: 3px 10px; font-size: 11px; }
 .btn.mx-fx.active { background: #ff5500; color: #fff; box-shadow: 0 0 6px #ff9a5c; }
+
+/* MIDI controller panel */
+.midi-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.midi-table td { padding: 3px 6px; border-bottom: 1px solid #e3e9f4; }
+.midi-table .btn { padding: 1px 8px; font-size: 11px; }
+.midi-bound { font-family: monospace; color: #2a7a2a; }
+.midi-unbound { color: #999; }
+.midi-armed { color: #cc0000; font-weight: bold; }
 .mx-rec-status { margin-top: 4px; color: #cc0000; font-weight: bold; min-height: 14px; }
 .btn.recording { background: #cc0000; color: #fff; }
 
