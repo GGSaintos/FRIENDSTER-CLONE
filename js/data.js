@@ -168,6 +168,7 @@ const DB = {
   _normalize(db) {
     db.users.forEach((u) => {
       if (!Array.isArray(u.songs)) u.songs = [];
+      if (!Array.isArray(u.mixes)) u.mixes = [];
       if (typeof u.autoplay !== "boolean") u.autoplay = true;
       if (typeof u.bgColor !== "string") u.bgColor = "";
       if (typeof u.bgImage !== "string") u.bgImage = "";
@@ -253,6 +254,7 @@ const DB = {
       testimonials: [],
       bulletins: [],
       songs: [],
+      mixes: [],
       autoplay: true,
       bgColor: "",
       bgImage: "",
@@ -306,12 +308,13 @@ const DB = {
     this._sync(targetId);
   },
 
-  addBulletin(userId, text) {
+  addBulletin(userId, text, image) {
     const u = this.getUser(userId);
     if (!u) return;
     u.bulletins.unshift({
       date: new Date().toISOString().slice(0, 10),
       text,
+      image: image || "",
     });
     this._sync(userId);
   },
@@ -328,6 +331,21 @@ const DB = {
     const u = this.getUser(userId);
     if (!u) return;
     u.songs = (u.songs || []).filter((s) => s.id !== songId);
+    this._sync(userId);
+  },
+
+  addMix(userId, mix) {
+    const u = this.getUser(userId);
+    if (!u) return;
+    if (!Array.isArray(u.mixes)) u.mixes = [];
+    u.mixes.unshift(mix); // { id, date, duration, deckA, deckB }
+    this._sync(userId);
+  },
+
+  removeMix(userId, mixId) {
+    const u = this.getUser(userId);
+    if (!u) return;
+    u.mixes = (u.mixes || []).filter((m) => m.id !== mixId);
     this._sync(userId);
   },
 };

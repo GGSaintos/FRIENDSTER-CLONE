@@ -18,8 +18,88 @@ function fmtDate(d) {
   if (isNaN(dt)) return d;
   return dt.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
+function fmtDateTime(d) {
+  const dt = new Date(d);
+  if (isNaN(dt)) return d;
+  return dt.toLocaleString("en-US", {
+    year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
 function userLink(u) {
   return `<a href="#/profile/${u.id}">${esc(u.name)}</a>`;
+}
+/* Only allow real image links so a bulletin can't inject javascript: URLs. */
+function safeImageUrl(url) {
+  const u = String(url == null ? "" : url).trim();
+  return /^https?:\/\//i.test(u) || /^data:image\//i.test(u) ? u : "";
+}
+/* Shared bulletin body: optional text + optional image. */
+function bulletinBody(b) {
+  const text = b.text ? `<div>${esc(b.text)}</div>` : "";
+  const img = safeImageUrl(b.image);
+  const image = img
+    ? `<div class="bulletin-img"><img src="${esc(img)}" alt="" loading="lazy" onerror="this.parentNode.style.display='none'"></div>`
+    : "";
+  return text + image;
+}
+
+/* The compose box: a caption, an image URL, or an uploaded photo.
+   Reused by the Home and Bulletins views (only one renders at a time). */
+function bulletinComposer(placeholder, onPost) {
+  return `
+    <textarea id="newBulletin" placeholder="${esc(placeholder)}"></textarea>
+    <input type="text" id="newBulletinImg" class="bulletin-url" placeholder="Paste an image URL (optional)" oninput="previewBulletinImg()" />
+    <div class="bulletin-upload">
+      or upload a photo:
+      <input type="file" accept="image/*" id="newBulletinFile" onchange="onBulletinFile(this)" />
+    </div>
+    <div id="newBulletinPreview" class="bulletin-preview"></div>
+    <div class="btn-row"><button class="btn" onclick="${onPost}()">Post Bulletin</button></div>`;
+}
+
+/* Read the chosen fields; returns { text, image } or null if empty. */
+function readBulletinInput() {
+  const text = document.getElementById("newBulletin").value.trim();
+  const image = safeImageUrl(document.getElementById("newBulletinImg").value);
+  if (!text && !image) return null;
+  return { text, image };
+}
+
+function previewBulletinImg() {
+  const url = safeImageUrl(document.getElementById("newBulletinImg").value);
+  const p = document.getElementById("newBulletinPreview");
+  p.innerHTML = url ? `<img src="${esc(url)}" alt="" onerror="this.style.display='none'">` : "";
+}
+
+/* Turn an uploaded file into a downscaled data: URL so it fits in the
+   shared database without a separate file store. */
+function onBulletinFile(input) {
+  const file = input.files && input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const MAX = 800;
+      let { width, height } = img;
+      if (width > MAX || height > MAX) {
+        const s = MAX / Math.max(width, height);
+        width = Math.round(width * s);
+        height = Math.round(height * s);
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+      document.getElementById("newBulletinImg").value = dataUrl;
+      previewBulletinImg();
+    };
+    img.onerror = () => alert("That file could not be read as an image.");
+    img.src = reader.result;
+  };
+  reader.onerror = () => alert("That file could not be read.");
+  reader.readAsDataURL(file);
 }
 
 /* ---- chrome (header + nav) -------------------------------------- */
@@ -182,7 +262,7 @@ function viewHome() {
           <img src="${b.user.avatar}" alt="">
           <div>
             <div>${userLink(b.user)} <span class="meta">&middot; ${fmtDate(b.date)}</span></div>
-            <div>${esc(b.text)}</div>
+            ${bulletinBody(b)}
           </div>
         </div>`
         )
@@ -233,8 +313,7 @@ function viewHome() {
         <div class="box">
           <div class="box-title">Post a Bulletin</div>
           <div class="box-body">
-            <textarea id="newBulletin" placeholder="What's on your mind, ${esc(me.name)}?"></textarea>
-            <div class="btn-row"><button class="btn" onclick="postBulletin()">Post Bulletin</button></div>
+            ${bulletinComposer(`What's on your mind, ${me.name}?`, "postBulletin")}
           </div>
         </div>
         <div class="box">
@@ -248,9 +327,9 @@ function viewHome() {
 
 function postBulletin() {
   const me = Session.current();
-  const text = document.getElementById("newBulletin").value.trim();
-  if (!text) return;
-  DB.addBulletin(me.id, text);
+  const input = readBulletinInput();
+  if (!input) return;
+  DB.addBulletin(me.id, input.text, input.image);
   viewHome();
 }
 
@@ -356,11 +435,49 @@ function viewProfile(id) {
        <div class="btn-row"><button class="btn" onclick="uploadSong('${u.id}')">Upload Song</button></div>`
     : "";
 
+  // recorded mixes (Spotify-style entries with a timestamp)
+  const mixes = u.mixes || [];
+  const mixDeckHtml = (d) =>
+    d
+      ? `<div class="mix-rec">
+           <div class="mix-vinyl"></div>
+           <div>
+             <div class="mix-track">${esc(d.title)}</div>
+             ${d.artist ? `<div class="muted">${esc(d.artist)}</div>` : ""}
+             <div class="mix-meta">${d.playBpm || d.baseBpm || "?"} BPM &middot; ${esc(d.key || "—")}${
+          d.keyShift ? ` (${d.keyShift > 0 ? "+" : ""}${d.keyShift} st)` : ""
+        }</div>
+           </div>
+         </div>`
+      : `<div class="mix-rec muted">(empty deck)</div>`;
+  const fmtDur = (s) => (s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "");
+  const mixesHtml = mixes.length
+    ? mixes
+        .map(
+          (m) => `<div class="mix-card">
+            <div class="mix-head"><b>Mix</b> <span class="meta">&middot; ${fmtDateTime(m.date)}${
+            m.duration ? " &middot; " + fmtDur(m.duration) : ""
+          }</span></div>
+            <div class="mix-decks">${mixDeckHtml(m.deckA)}<span class="mix-plus">&#43;</span>${mixDeckHtml(m.deckB)}</div>
+            <audio controls preload="none" data-song-id="${esc(m.id)}"></audio>
+            ${isMe ? `<div class="btn-row"><button class="btn danger" onclick="deleteMix('${u.id}','${esc(m.id)}')">Delete</button></div>` : ""}
+          </div>`
+        )
+        .join("")
+    : `<p class="muted">No mixes yet.</p>`;
+
+  const mixerBox = isMe
+    ? `<div class="box">
+         <div class="box-title">DJ Mixer</div>
+         <div class="box-body"><div id="djMixer"><p class="muted">Loading mixer…</p></div></div>
+       </div>`
+    : "";
+
   const body = `
     <div class="columns">
       <div class="col-left">
         <div class="box">
-          <div class="box-title">${esc(u.name)}</div>
+          <div class="box-title">${esc(u.username)}</div>
           <div class="box-body" style="text-align:center">
             <div class="profile-photo" style="margin:0 auto;width:140px;height:140px">
               <img src="${u.avatar}" alt="">
@@ -410,6 +527,13 @@ function viewProfile(id) {
           </div>
         </div>
 
+        ${mixerBox}
+
+        <div class="box">
+          <div class="box-title">${esc(u.name)}'s Mixes</div>
+          <div class="box-body">${mixesHtml}</div>
+        </div>
+
         <div class="box">
           <div class="box-title">${esc(u.name)}'s Friends (${u.friends.length})</div>
           <div class="box-body">
@@ -431,6 +555,17 @@ function viewProfile(id) {
   app.innerHTML = chrome(isMe ? "My Profile" : "", body);
   applyBg(u.bgColor, u.bgImage); // this profile's custom background
   hydrateAudio();
+  if (isMe && typeof Mixer !== "undefined") {
+    const el = document.getElementById("djMixer");
+    if (el) {
+      Mixer.mount(el, u.songs || [], {
+        onSave: (mix) => {
+          DB.addMix(u.id, mix);
+          viewProfile(u.id); // re-render so the new mix appears
+        },
+      });
+    }
+  }
 }
 
 /* Load each track's blob from IndexedDB and wire it to its <audio>. */
@@ -498,6 +633,13 @@ async function deleteSong(userId, songId) {
   if (!confirm("Remove this song?")) return;
   try { await MusicStore.remove(songId); } catch (e) {}
   DB.removeSong(userId, songId);
+  viewProfile(userId);
+}
+
+async function deleteMix(userId, mixId) {
+  if (!confirm("Delete this mix?")) return;
+  try { await MusicStore.remove(mixId); } catch (e) {}
+  DB.removeMix(userId, mixId);
   viewProfile(userId);
 }
 
@@ -628,7 +770,7 @@ function viewBulletins() {
             <img src="${b.user.avatar}" alt="">
             <div>
               <div>${userLink(b.user)} <span class="meta">&middot; ${fmtDate(b.date)}</span></div>
-              <div>${esc(b.text)}</div>
+              ${bulletinBody(b)}
             </div>
           </div>`
         )
@@ -639,8 +781,7 @@ function viewBulletins() {
     <div class="box">
       <div class="box-title">Post a Bulletin</div>
       <div class="box-body">
-        <textarea id="newBulletin" placeholder="Broadcast to all your friends..."></textarea>
-        <div class="btn-row"><button class="btn" onclick="postBulletinB()">Post Bulletin</button></div>
+        ${bulletinComposer("Broadcast to all your friends...", "postBulletinB")}
       </div>
     </div>
     <div class="box">
@@ -650,9 +791,9 @@ function viewBulletins() {
   app.innerHTML = chrome("Bulletins", body);
 }
 function postBulletinB() {
-  const text = document.getElementById("newBulletin").value.trim();
-  if (!text) return;
-  DB.addBulletin(Session.current().id, text);
+  const input = readBulletinInput();
+  if (!input) return;
+  DB.addBulletin(Session.current().id, input.text, input.image);
   viewBulletins();
 }
 
@@ -905,6 +1046,7 @@ function router() {
   const route = parts[0];
 
   resetBg(); // default background; profile/settings views re-apply as needed
+  if (typeof Mixer !== "undefined") Mixer.unmount(); // stop any deck audio when leaving
 
   switch (route) {
     case "login": return viewLogin();
