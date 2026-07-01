@@ -122,6 +122,10 @@ function serveStatic(res, urlPath) {
 
 const server = http.createServer(async (req, res) => {
   const urlPath = decodeURIComponent(req.url.split("?")[0]);
+  // Liveness probe for Render — cheap, never touches the database.
+  if (urlPath === "/healthz") {
+    return sendJSON(res, 200, { status: "ok" });
+  }
   if (urlPath.startsWith("/api/")) {
     try {
       await handleApi(req, res, urlPath);
@@ -133,13 +137,19 @@ const server = http.createServer(async (req, res) => {
   serveStatic(res, urlPath);
 });
 
-db.init()
-  .then(() => {
-    server.listen(PORT, () => {
-      console.log(`\n  friendster clone running at  http://localhost:${PORT}\n  press Ctrl+C to stop\n`);
-    });
-  })
-  .catch((e) => {
-    console.error("Failed to initialize database:", e.message);
-    process.exit(1);
-  });
+// Start listening right away so the /healthz probe passes even while the
+// database is still coming up; initialize the schema in the background.
+server.listen(PORT, () => {
+  console.log(`\n  friendster clone running at  http://localhost:${PORT}\n  press Ctrl+C to stop\n`);
+});
+
+async function initDb(attempt = 1) {
+  try {
+    await db.init();
+    console.log("  database ready");
+  } catch (e) {
+    console.error(`  database init failed (attempt ${attempt}): ${e.message}`);
+    if (attempt < 10) setTimeout(() => initDb(attempt + 1), 3000);
+  }
+}
+initDb();
