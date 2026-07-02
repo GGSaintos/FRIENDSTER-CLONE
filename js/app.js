@@ -202,16 +202,12 @@ function viewLogin() {
         <div class="box-body">
           <div id="formMsg"></div>
           <label class="field">Username</label>
-          <input type="text" id="li_user" placeholder="tom" />
+          <input type="text" id="li_user" />
           <label class="field">Password</label>
-          <input type="password" id="li_pass" placeholder="password" />
+          <input type="password" id="li_pass" />
           <div class="btn-row">
             <button class="btn" onclick="doLogin()">Login</button>
             <a class="btn secondary" href="#/signup">Sign Up</a>
-          </div>
-          <div class="welcome-tag">
-            Try the demo account &mdash; <b>tom</b> / <b>password</b><br/>
-            (every seeded member uses the password <b>password</b>)
           </div>
         </div>
       </div>
