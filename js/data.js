@@ -356,16 +356,32 @@ const DB = {
     this._sync(targetId);
   },
 
+  // How long after posting a bulletin its author may still delete it.
+  BULLETIN_DELETE_MS: 60 * 1000, // 1 minute
+
   addBulletin(userId, text, image, mix) {
     const u = this.getUser(userId);
     if (!u) return;
     u.bulletins.unshift({
+      ts: Date.now(), // full timestamp; also the delete key
       date: new Date().toISOString().slice(0, 10),
       text,
       image: image || "",
       mix: mix || null,
     });
     this._sync(userId);
+  },
+
+  /* Author-only, time-limited bulletin delete. Returns true if it was
+     removed, false if it's missing or the 1-minute window has passed. */
+  deleteBulletin(userId, ts) {
+    const u = this.getUser(userId);
+    if (!u || !Array.isArray(u.bulletins)) return false;
+    const b = u.bulletins.find((x) => x.ts === ts);
+    if (!b || !b.ts || Date.now() - b.ts > this.BULLETIN_DELETE_MS) return false;
+    u.bulletins = u.bulletins.filter((x) => x.ts !== ts);
+    this._sync(userId);
+    return true;
   },
 
   addSong(userId, song) {

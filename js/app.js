@@ -108,6 +108,16 @@ function bulletinBody(b) {
   return text + image + mix;
 }
 
+/* Delete control for a feed item — only for my own bulletins, and only
+   while the 1-minute post-window is still open. `b` is a feed entry
+   ({ user, ts, ... }). */
+function bulletinDeleteBtn(b) {
+  const me = Session.current();
+  if (!me || !b.user || b.user.id !== me.id) return "";
+  if (!b.ts || Date.now() - b.ts > DB.BULLETIN_DELETE_MS) return "";
+  return `<div class="btn-row"><button class="btn danger" onclick="deleteBulletin('${b.user.id}', ${b.ts})">Delete</button></div>`;
+}
+
 /* The compose box: a caption, an image URL, or an uploaded photo.
    Reused by the Home and Bulletins views (only one renders at a time). */
 function bulletinComposer(placeholder, onPost) {
@@ -328,6 +338,7 @@ function viewHome() {
           <div>
             <div>${userLink(b.user)} <span class="meta">&middot; ${fmtDate(b.date)}</span></div>
             ${bulletinBody(b)}
+            ${bulletinDeleteBtn(b)}
           </div>
         </div>`
         )
@@ -397,6 +408,14 @@ function postBulletin() {
   if (!input) return;
   DB.addBulletin(me.id, input.text, input.image);
   viewHome();
+}
+
+function deleteBulletin(userId, ts) {
+  if (userId !== Session.current().id) return; // only your own posts
+  if (!DB.deleteBulletin(userId, ts)) {
+    alert("You can only delete a bulletin within 1 minute of posting.");
+  }
+  router(); // re-render whichever feed we're on
 }
 
 /* ---- Profile ---------------------------------------------------- */
@@ -882,6 +901,7 @@ function viewBulletins() {
             <div>
               <div>${userLink(b.user)} <span class="meta">&middot; ${fmtDate(b.date)}</span></div>
               ${bulletinBody(b)}
+              ${bulletinDeleteBtn(b)}
             </div>
           </div>`
         )
