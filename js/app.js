@@ -256,6 +256,7 @@ async function doLogin() {
   const p = document.getElementById("li_pass").value;
   try {
     await Session.login(u, p);
+    await DB.refresh(); // pull the whole world so search + requests are populated
     go("#/home");
   } catch (e) {
     document.getElementById("formMsg").innerHTML = `<div class="error">${esc(e.message)}</div>`;
@@ -1198,8 +1199,12 @@ function router() {
 }
 
 window.addEventListener("hashchange", router);
-window.addEventListener("load", () => {
-  DB.load(); // ensure seeded
+window.addEventListener("load", async () => {
+  try {
+    await DB.init(); // pull the whole shared world into the cache (seeds if empty)
+  } catch (e) {
+    console.error("[boot] could not load the world:", e.message);
+  }
   if (!location.hash) location.hash = Session.current() ? "#/home" : "#/login";
   router();
 });
