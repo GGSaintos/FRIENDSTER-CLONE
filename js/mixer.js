@@ -176,13 +176,11 @@ const Mixer = (() => {
   }
 
   /* ----------------------------------------------------------------
-     Approximate "stem" isolation with the Web Audio API (no ML).
-       instrumental — cancel the centre channel (L−R): removes centre-
-                      panned vocals. Genuinely useful on stereo tracks.
-       vocals       — centre-ish mono, band-limited to the vocal range.
-                      Rough: bleed from other centre sounds.
-       drums        — emphasise kick lows + transient highs, drop the
-                      sustained mids. Rough: "more drums", not isolated.
+     Approximate stem components with the Web Audio API (no ML). Both are
+     mono; the "instrumental" stem is derived elsewhere as the remainder
+     (mix − drums − vocals) so the three sum back to the original.
+       vocals — centre-ish mono, band-limited to the vocal range. Rough.
+       drums  — kick lows + transient highs. Rough: "more drums".
      Rendered offline into a new mono AudioBuffer. ----------------- */
   async function renderStem(buffer, stem) {
     const len = buffer.length, rate = buffer.sampleRate, ch = buffer.numberOfChannels;
@@ -190,44 +188,30 @@ const Mixer = (() => {
     const src = octx.createBufferSource();
     src.buffer = buffer;
 
-    if (stem === "instrumental") {
-      // L − R  (centre cancels out). Mono sources can't cancel; pass through.
-      if (ch >= 2) {
-        const split = octx.createChannelSplitter(2);
-        src.connect(split);
-        const gl = octx.createGain(); gl.gain.value = 1;
-        const gr = octx.createGain(); gr.gain.value = -1;
-        split.connect(gl, 0); split.connect(gr, 1);
-        gl.connect(octx.destination); gr.connect(octx.destination);
-      } else {
-        src.connect(octx.destination);
-      }
+    // mono mid = (L+R)/2 (or the single channel for mono sources)
+    const mid = octx.createGain();
+    if (ch >= 2) {
+      const split = octx.createChannelSplitter(2);
+      src.connect(split);
+      const gl = octx.createGain(); gl.gain.value = 0.5;
+      const gr = octx.createGain(); gr.gain.value = 0.5;
+      split.connect(gl, 0); split.connect(gr, 1);
+      gl.connect(mid); gr.connect(mid);
     } else {
-      // mono mid = (L+R)/2 (or the single channel for mono sources)
-      const mid = octx.createGain();
-      if (ch >= 2) {
-        const split = octx.createChannelSplitter(2);
-        src.connect(split);
-        const gl = octx.createGain(); gl.gain.value = 0.5;
-        const gr = octx.createGain(); gr.gain.value = 0.5;
-        split.connect(gl, 0); split.connect(gr, 1);
-        gl.connect(mid); gr.connect(mid);
-      } else {
-        src.connect(mid);
-      }
+      src.connect(mid);
+    }
 
-      if (stem === "vocals") {
-        const hp = octx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 220;
-        const lp = octx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 5000;
-        mid.connect(hp); hp.connect(lp); lp.connect(octx.destination);
-      } else if (stem === "drums") {
-        const low = octx.createBiquadFilter(); low.type = "lowpass"; low.frequency.value = 120;
-        const high = octx.createBiquadFilter(); high.type = "highpass"; high.frequency.value = 3500;
-        mid.connect(low); mid.connect(high);
-        low.connect(octx.destination); high.connect(octx.destination);
-      } else {
-        mid.connect(octx.destination);
-      }
+    if (stem === "vocals") {
+      const hp = octx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 220;
+      const lp = octx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 5000;
+      mid.connect(hp); hp.connect(lp); lp.connect(octx.destination);
+    } else if (stem === "drums") {
+      const low = octx.createBiquadFilter(); low.type = "lowpass"; low.frequency.value = 120;
+      const high = octx.createBiquadFilter(); high.type = "highpass"; high.frequency.value = 3500;
+      mid.connect(low); mid.connect(high);
+      low.connect(octx.destination); high.connect(octx.destination);
+    } else {
+      mid.connect(octx.destination);
     }
 
     src.start();
@@ -242,8 +226,9 @@ const Mixer = (() => {
       this.inst = inst;
       this.side = side; // "a" | "b"
       this.audioBuffer = null;
-      this.originalBuffer = null; // full mix, kept so stem filters can re-derive
-      this.activeStem = null;     // null | "drums" | "vocals" | "instrumental"
+      this.originalBuffer = null; // full mix, kept so stems can be re-derived
+      this.stemBuffers = null;    // { drums, vocals, instrumental } Float32 (lazy)
+      this.stemState = { drums: true, vocals: true, instrumental: true }; // true = playing
       this.toneBuffer = null;
       this.player = null;
       this.gain = null; // created lazily by the instance
@@ -286,7 +271,8 @@ const Mixer = (() => {
     async _load(arr, title) {
       const buf = await audioContext().decodeAudioData(arr.slice(0));
       this.originalBuffer = buf; // remember the full mix for stem filtering
-      this.activeStem = null;
+      this.stemBuffers = null;
+      this.stemState = { drums: true, vocals: true, instrumental: true };
       return this._applyBuffer(buf, title);
     }
 
@@ -314,17 +300,78 @@ const Mixer = (() => {
       return { bpm: this.baseBpm, key: this.key, duration: this.duration };
     }
 
-    /* Swap the deck between the full mix and an isolated stem. Clicking the
-       active stem again reverts to the full mix. Returns the new active
-       stem (or null). Re-analyzes, so the caller shows an "analyzing…" state. */
-    async setStem(stem) {
+    /* Rekordbox-style stem mute: toggle one stem in/out of the mix. The
+       remaining stems keep playing together. Tempo/key/grid stay put (it's
+       the same song), so we only swap the audio, not the analysis. Returns
+       the new {drums,vocals,instrumental} on/off state. */
+    async toggleStem(stem) {
       if (!this.originalBuffer) return null;
-      const next = this.activeStem === stem ? null : stem;
-      if (this.playing) this.pause();
-      const buf = next ? await renderStem(this.originalBuffer, next) : this.originalBuffer;
-      this.activeStem = next;
-      await this._applyBuffer(buf, this.title);
-      return next;
+      this.stemState[stem] = !this.stemState[stem];
+      const st = this.stemState;
+      let buf;
+      if (st.drums && st.vocals && st.instrumental) {
+        buf = this.originalBuffer; // everything on -> the true full mix
+      } else {
+        await this._computeStems();
+        buf = this._mixStems();
+      }
+      this._swapAudio(buf);
+      return { ...st };
+    }
+
+    /* Split the full mix into three mono stems that SUM BACK to the mix, so
+       muting any subset is consistent. drums + vocals come from filters;
+       instrumental is defined as the remainder. Cached after first call. */
+    async _computeStems() {
+      if (this.stemBuffers) return;
+      const orig = this.originalBuffer;
+      const len = orig.length, ch = orig.numberOfChannels;
+      const drums = (await renderStem(orig, "drums")).getChannelData(0);
+      const vocals = (await renderStem(orig, "vocals")).getChannelData(0);
+      const origMono = new Float32Array(len);
+      if (ch >= 2) {
+        const L = orig.getChannelData(0), R = orig.getChannelData(1);
+        for (let i = 0; i < len; i++) origMono[i] = (L[i] + R[i]) / 2;
+      } else {
+        origMono.set(orig.getChannelData(0));
+      }
+      const instrumental = new Float32Array(len);
+      for (let i = 0; i < len; i++) instrumental[i] = origMono[i] - drums[i] - vocals[i];
+      this.stemBuffers = { drums, vocals, instrumental, len, rate: orig.sampleRate };
+    }
+
+    /* Sum the currently-enabled stems into a fresh mono buffer. */
+    _mixStems() {
+      const { drums, vocals, instrumental, len, rate } = this.stemBuffers;
+      const st = this.stemState;
+      const out = audioContext().createBuffer(1, len, rate);
+      const o = out.getChannelData(0);
+      for (let i = 0; i < len; i++) {
+        let v = 0;
+        if (st.drums) v += drums[i];
+        if (st.vocals) v += vocals[i];
+        if (st.instrumental) v += instrumental[i];
+        o[i] = v;
+      }
+      return out;
+    }
+
+    /* Replace the deck's audio without touching tempo/key/grid or the
+       playhead — used for live stem muting. Redraws the waveform and keeps
+       playback going if it was playing. */
+    _swapAudio(buf) {
+      const wasPlaying = this.playing;
+      if (this.playing) this.pause(); // records seekOffset, stops the old player
+      this.audioBuffer = buf;
+      this.peaks = computePeaks(buf, 500);
+      this.peaksHi = computePeaksHiRes(buf, this.hiRate);
+      this.render(this.seekOffset);
+      this.inst.ensureAudio();
+      if (typeof Tone !== "undefined") {
+        this.toneBuffer = new Tone.ToneAudioBuffer(buf);
+        this._makePlayer(); // keeps this.rate() and keyShift
+      }
+      if (wasPlaying) this.play();
     }
 
     _makePlayer() {
@@ -589,7 +636,7 @@ const Mixer = (() => {
             <span class="deck-title" id="mx_name_${side}">Deck ${S}</span>
           </div>
           <input type="file" accept="audio/*" id="mx_file_${side}" class="mx-file">
-          <div class="mx-stems" style="display:flex;gap:6px;margin:6px 0" title="Approximate stem isolation (click again to restore the full mix)">
+          <div class="mx-stems" style="display:flex;gap:6px;margin:6px 0" title="Tap a stem to remove it from the mix (like Rekordbox). Tap again to bring it back.">
             <button class="btn mx-stem" id="mx_stem_drums_${side}" style="background:#2a5fd0;color:#fff" disabled>Drums</button>
             <button class="btn mx-stem" id="mx_stem_vocals_${side}" style="background:#1f9d55;color:#fff" disabled>Vocals</button>
             <button class="btn mx-stem" id="mx_stem_instrumental_${side}" style="background:#d23b3b;color:#fff" disabled>Instrumental</button>
@@ -647,7 +694,7 @@ const Mixer = (() => {
         this.q("#mx_file_" + s).addEventListener("change", (e) => this.importFile(s, e.target.files[0]));
         this.q("#mx_play_" + s).addEventListener("click", () => deck.toggle());
         ["drums", "vocals", "instrumental"].forEach((stem) => {
-          this.q(`#mx_stem_${stem}_${s}`).addEventListener("click", () => this.setStem(s, stem));
+          this.q(`#mx_stem_${stem}_${s}`).addEventListener("click", () => this.toggleStem(s, stem));
         });
         this.q("#mx_bpm_" + s).addEventListener("input", (e) => {
           this.q("#mx_bpmval_" + s).textContent = e.target.value;
@@ -745,53 +792,47 @@ const Mixer = (() => {
       key.disabled = false; key.value = 0;
       this.q("#mx_keyval_" + s).textContent = 0;
       this.q("#mx_play_" + s).disabled = false;
-      // a fresh track loads as the full mix — enable stems, clear active state
+      // a fresh track loads as the full mix — enable stems, all playing
       ["drums", "vocals", "instrumental"].forEach((stem) => {
         const b = this.q(`#mx_stem_${stem}_${s}`);
         if (b) b.disabled = false;
       });
-      this._reflectStems(s, null);
+      this._reflectStems(s, { drums: true, vocals: true, instrumental: true });
       this.updateTime(s, 0, deck.duration);
       // enable recording once at least one deck is loaded
       if (this.deckA.audioBuffer || this.deckB.audioBuffer) this.q("#mx_rec").disabled = false;
     }
 
-    /* Highlight the active stem button and dim the others. */
-    _reflectStems(s, active) {
+    /* Show which stems are muted: removed ones are dimmed + struck through. */
+    _reflectStems(s, state) {
       ["drums", "vocals", "instrumental"].forEach((stem) => {
         const b = this.q(`#mx_stem_${stem}_${s}`);
         if (!b) return;
-        b.style.opacity = active && active !== stem ? "0.45" : "1";
-        b.style.outline = active === stem ? "2px solid #fff" : "none";
-        b.style.outlineOffset = active === stem ? "-3px" : "0";
+        const removed = state && state[stem] === false;
+        b.style.opacity = removed ? "0.35" : "1";
+        b.style.textDecoration = removed ? "line-through" : "none";
       });
     }
 
-    /* Apply/toggle a stem filter on a deck, with an "analyzing…" state
-       while the offline render + re-analysis runs. */
-    async setStem(s, stem) {
+    /* Toggle a stem in/out of a deck's mix (Rekordbox-style). Shows an
+       "analyzing…" state only the first time, while the stems are split. */
+    async toggleStem(s, stem) {
       const deck = s === "a" ? this.deckA : this.deckB;
       if (!deck.originalBuffer) return;
       const read = this.q("#mx_read_" + s);
-      if (read) read.textContent = "analyzing…";
-      let active;
+      const prev = read ? read.textContent : "";
+      if (read && !deck.stemBuffers) read.textContent = "analyzing…";
+      let state;
       try {
-        active = await deck.setStem(stem);
+        state = await deck.toggleStem(stem);
       } catch (e) {
-        if (read) read.textContent = "stem failed — restored full mix";
-        try { await deck._applyBuffer(deck.originalBuffer, deck.title); deck.activeStem = null; } catch (_) {}
-        this._reflectStems(s, null);
+        if (read) read.textContent = prev || "stem error";
         return;
       }
-      const label = active ? ` · ${active}` : "";
-      if (read) read.textContent = `${deck.baseBpm} BPM · ${deck.key.name}${label}`;
-      // tempo/key were re-detected on the new buffer — resync the sliders
-      const bpm = this.q("#mx_bpm_" + s);
-      if (bpm) { bpm.value = deck.baseBpm; this.q("#mx_bpmval_" + s).textContent = deck.baseBpm; }
-      const key = this.q("#mx_key_" + s);
-      if (key) { key.value = 0; this.q("#mx_keyval_" + s).textContent = 0; }
-      this.updateTime(s, 0, deck.duration);
-      this._reflectStems(s, active);
+      this._reflectStems(s, state);
+      const removed = ["drums", "vocals", "instrumental"].filter((k) => !state[k]);
+      const suffix = removed.length ? ` · −${removed.join(",")}` : "";
+      if (read) read.textContent = `${deck.baseBpm} BPM · ${deck.key.name}${suffix}`;
     }
 
     updateTime(s, pos, dur) {
