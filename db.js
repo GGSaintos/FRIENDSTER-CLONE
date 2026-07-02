@@ -92,8 +92,20 @@ async function createUser(user) {
   return publicUser(user);
 }
 
-/* Replace one user's data (used for every mutation to that user). */
+/* Replace one user's data (used for every mutation to that user).
+   The public API strips passwords from every user object it hands out
+   (see publicUser), so a client PATCH almost never carries one. Never
+   let that blank out the stored credential — merge the existing
+   password back in whenever the incoming data doesn't include it. */
 async function putUser(id, data) {
+  if (data && data.password == null) {
+    const { rows } = await pool.query(
+      "SELECT data->>'password' AS pw FROM users WHERE id = $1",
+      [id]
+    );
+    const pw = rows[0] && rows[0].pw;
+    if (pw != null) data = { ...data, password: pw };
+  }
   await pool.query(
     `UPDATE users SET username = $2, data = $3 WHERE id = $1`,
     [id, String(data.username).toLowerCase(), data]
