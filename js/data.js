@@ -167,6 +167,8 @@ const DB = {
 
   _normalize(db) {
     db.users.forEach((u) => {
+      if (!Array.isArray(u.friends)) u.friends = [];
+      if (!Array.isArray(u.requestsIn)) u.requestsIn = []; // incoming pending requests
       if (!Array.isArray(u.songs)) u.songs = [];
       if (!Array.isArray(u.mixes)) u.mixes = [];
       if (typeof u.autoplay !== "boolean") u.autoplay = true;
@@ -251,6 +253,7 @@ const DB = {
       tv: "",
       joined: new Date().toISOString().slice(0, 10),
       friends: ["u1"], // Tom befriends everyone
+      requestsIn: [], // incoming pending friend requests
       testimonials: [],
       bulletins: [],
       songs: [],
@@ -295,6 +298,51 @@ const DB = {
     if (b) b.friends = b.friends.filter((f) => f !== aId);
     if (a) this._sync(aId);
     if (b) this._sync(bId);
+  },
+
+  /* ---- Friend requests --------------------------------------------
+     A request is a sender id parked in the recipient's `requestsIn`.
+     Accepting turns it into a mutual friendship; rejecting/cancelling
+     just drops it. ------------------------------------------------- */
+
+  /* fromId asks toId to be friends. */
+  sendRequest(fromId, toId) {
+    if (fromId === toId) return;
+    const from = this.getUser(fromId);
+    const to = this.getUser(toId);
+    if (!from || !to) return;
+    if (from.friends.includes(toId)) return; // already friends
+    // If they already asked me, treat this as accepting rather than stacking.
+    if ((from.requestsIn || []).includes(toId)) return this.acceptRequest(fromId, toId);
+    if (!Array.isArray(to.requestsIn)) to.requestsIn = [];
+    if (!to.requestsIn.includes(fromId)) {
+      to.requestsIn.push(fromId);
+      this._sync(toId);
+    }
+  },
+
+  /* meId accepts the pending request from fromId. */
+  acceptRequest(meId, fromId) {
+    const me = this.getUser(meId);
+    if (!me || !(me.requestsIn || []).includes(fromId)) return;
+    me.requestsIn = me.requestsIn.filter((x) => x !== fromId);
+    this.addFriend(meId, fromId); // links both sides and syncs both (incl. my requestsIn)
+  },
+
+  /* meId declines the pending request from fromId. */
+  rejectRequest(meId, fromId) {
+    const me = this.getUser(meId);
+    if (!me) return;
+    me.requestsIn = (me.requestsIn || []).filter((x) => x !== fromId);
+    this._sync(meId);
+  },
+
+  /* fromId withdraws a request they sent to toId. */
+  cancelRequest(fromId, toId) {
+    const to = this.getUser(toId);
+    if (!to) return;
+    to.requestsIn = (to.requestsIn || []).filter((x) => x !== fromId);
+    this._sync(toId);
   },
 
   addTestimonial(targetId, fromId, text) {

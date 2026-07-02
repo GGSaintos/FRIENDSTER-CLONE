@@ -26,7 +26,29 @@ function fmtDateTime(d) {
   });
 }
 function userLink(u) {
-  return `<a href="#/profile/${u.id}">${esc(u.name)}</a>`;
+  return `<a href="#/profile/${u.id}">${esc(u.username)}</a> <span class="muted" style="font-size:11px">(${esc(u.name)})</span>`;
+}
+
+/* A member's username shown primarily, with their full name as a small
+   caption beneath it. Used in every member listing and friend cell. */
+function nameStack(u) {
+  return `<a href="#/profile/${u.id}" style="font-weight:bold">${esc(u.username)}</a>
+          <div class="muted" style="font-size:11px">${esc(u.name)}</div>`;
+}
+
+/* Relationship action button(s) for a target user, from my point of view:
+   Unfriend / Accept+Decline / Cancel Request / Add Friend. */
+function relBtns(u) {
+  const me = Session.current();
+  if (!me || u.id === me.id) return "";
+  if (me.friends.includes(u.id))
+    return `<button class="btn danger" onclick="unfriend('${u.id}')">Unfriend</button>`;
+  if ((me.requestsIn || []).includes(u.id))
+    return `<button class="btn" onclick="acceptReq('${u.id}')">Accept</button>
+            <button class="btn danger" onclick="rejectReq('${u.id}')">Decline</button>`;
+  if ((u.requestsIn || []).includes(me.id))
+    return `<button class="btn secondary" onclick="cancelReq('${u.id}')">Cancel Request</button>`;
+  return `<button class="btn" onclick="sendReq('${u.id}')">Add Friend</button>`;
 }
 
 /* ---- recorded-mix rendering (used on the profile + mixer page) --- */
@@ -154,11 +176,13 @@ function chrome(activeTab, bodyHtml) {
        <a href="#" onclick="doLogout();return false">Log Out</a>`
     : `<a href="#/login">Login</a>`;
 
+  const reqCount = me ? (me.requestsIn || []).length : 0;
   const tabs = me
     ? [
         ["Home", "#/home"],
         ["My Profile", `#/profile/${me.id}`],
         ["Friends", `#/friends/${me.id}`],
+        ["Requests", "#/requests", reqCount],
         ["Search", "#/search"],
         ["Bulletins", "#/bulletins"],
       ]
@@ -166,8 +190,10 @@ function chrome(activeTab, bodyHtml) {
 
   const nav = tabs
     .map(
-      ([label, href]) =>
-        `<a href="${href}" class="${activeTab === label ? "active" : ""}">${label}</a>`
+      ([label, href, badge]) =>
+        `<a href="${href}" class="${activeTab === label ? "active" : ""}">${label}${
+          badge ? ` (${badge})` : ""
+        }</a>`
     )
     .join("");
 
@@ -318,7 +344,7 @@ function viewHome() {
         .map(
           (u) => `<div class="friend-cell">
             <a href="#/profile/${u.id}"><img src="${u.avatar}" alt=""></a>
-            <a href="#/profile/${u.id}">${esc(u.name)}</a>
+            ${nameStack(u)}
           </div>`
         )
         .join("")}</div>`
@@ -381,16 +407,10 @@ function viewProfile(id) {
   if (!u) { app.innerHTML = chrome("", `<div class="box"><div class="box-body">User not found.</div></div>`); return; }
 
   const isMe = u.id === me.id;
-  const isFriend = me.friends.includes(u.id);
 
-  let friendBtn = "";
-  if (!isMe) {
-    friendBtn = isFriend
-      ? `<button class="btn danger" onclick="unfriend('${u.id}')">Remove Friend</button>`
-      : `<button class="btn" onclick="friend('${u.id}')">Add as Friend</button>`;
-  } else {
-    friendBtn = `<a class="btn secondary" href="#/settings">Edit Profile</a>`;
-  }
+  let friendBtn = isMe
+    ? `<a class="btn secondary" href="#/settings">Edit Profile</a>`
+    : relBtns(u);
 
   // friends preview
   const fpreview = u.friends
@@ -400,7 +420,7 @@ function viewProfile(id) {
     .map(
       (f) => `<div class="friend-cell">
         <a href="#/profile/${f.id}"><img src="${f.avatar}" alt=""></a>
-        <a href="#/profile/${f.id}">${esc(f.name)}</a>
+        ${nameStack(f)}
       </div>`
     )
     .join("");
@@ -688,8 +708,11 @@ function viewMixer() {
   }
 }
 
-function friend(id) { DB.addFriend(Session.current().id, id); viewProfile(id); }
-function unfriend(id) { DB.removeFriend(Session.current().id, id); viewProfile(id); }
+function sendReq(id) { DB.sendRequest(Session.current().id, id); router(); }
+function acceptReq(id) { DB.acceptRequest(Session.current().id, id); router(); }
+function rejectReq(id) { DB.rejectRequest(Session.current().id, id); router(); }
+function cancelReq(id) { DB.cancelRequest(Session.current().id, id); router(); }
+function unfriend(id) { DB.removeFriend(Session.current().id, id); router(); }
 function postTestimonial(id) {
   const text = document.getElementById("newTesti").value.trim();
   if (!text) return;
@@ -712,11 +735,11 @@ function viewFriends(id) {
       return `<div class="member-row">
         <a href="#/profile/${f.id}"><img src="${f.avatar}" alt=""></a>
         <div style="flex:1">
-          <div class="name"><a href="#/profile/${f.id}">${esc(f.name)}</a></div>
+          <div class="name">${nameStack(f)}</div>
           <div class="muted">${esc(f.location)}</div>
           <div>${esc(f.headline)}</div>
         </div>
-        ${canRemove ? `<button class="btn danger" onclick="unfriendList('${f.id}','${u.id}')">Remove</button>` : ""}
+        ${canRemove ? `<button class="btn danger" onclick="unfriendList('${f.id}','${u.id}')">Unfriend</button>` : ""}
       </div>`;
     })
     .join("");
@@ -753,19 +776,14 @@ function viewSearch(q) {
 
   const rows = results
     .map((u) => {
-      const isFriend = me.friends.includes(u.id);
       return `<div class="member-row">
         <a href="#/profile/${u.id}"><img src="${u.avatar}" alt=""></a>
         <div style="flex:1">
-          <div class="name"><a href="#/profile/${u.id}">${esc(u.name)}</a></div>
+          <div class="name">${nameStack(u)}</div>
           <div class="muted">${esc(u.location)} ${u.age ? "&middot; " + u.age : ""}</div>
           <div>${esc(u.headline)}</div>
         </div>
-        ${
-          isFriend
-            ? `<span class="muted">&#10004; Friend</span>`
-            : `<button class="btn" onclick="friendFromSearch('${u.id}', '${esc(q)}')">Add Friend</button>`
-        }
+        <div class="btn-row">${relBtns(u)}</div>
       </div>`;
     })
     .join("");
@@ -791,9 +809,56 @@ function runSearch() {
   const q = document.getElementById("searchQ").value.trim();
   go("#/search" + (q ? "/" + encodeURIComponent(q) : ""));
 }
-function friendFromSearch(id, q) {
-  DB.addFriend(Session.current().id, id);
-  viewSearch(q);
+
+/* ---- Friend requests page -------------------------------------- */
+function viewRequests() {
+  if (!requireLogin()) return;
+  const me = Session.current();
+  const incoming = (me.requestsIn || []).map((id) => DB.getUser(id)).filter(Boolean);
+  const outgoing = DB.allUsers().filter(
+    (u) => u.id !== me.id && (u.requestsIn || []).includes(me.id)
+  );
+
+  const row = (u, actions) => `<div class="member-row">
+      <a href="#/profile/${u.id}"><img src="${u.avatar}" alt=""></a>
+      <div style="flex:1">
+        <div class="name">${nameStack(u)}</div>
+        <div class="muted">${esc(u.location)}</div>
+        <div>${esc(u.headline)}</div>
+      </div>
+      <div class="btn-row">${actions}</div>
+    </div>`;
+
+  const inHtml = incoming.length
+    ? incoming
+        .map((u) =>
+          row(
+            u,
+            `<button class="btn" onclick="acceptReq('${u.id}')">Accept</button>
+             <button class="btn danger" onclick="rejectReq('${u.id}')">Decline</button>`
+          )
+        )
+        .join("")
+    : `<p class="muted">No pending friend requests.</p>`;
+
+  const outHtml = outgoing.length
+    ? outgoing
+        .map((u) =>
+          row(u, `<button class="btn secondary" onclick="cancelReq('${u.id}')">Cancel</button>`)
+        )
+        .join("")
+    : `<p class="muted">You haven't sent any requests.</p>`;
+
+  const body = `
+    <div class="box">
+      <div class="box-title">Friend Requests (${incoming.length})</div>
+      <div class="box-body">${inHtml}</div>
+    </div>
+    <div class="box">
+      <div class="box-title">Sent Requests (${outgoing.length})</div>
+      <div class="box-body">${outHtml}</div>
+    </div>`;
+  app.innerHTML = chrome("Requests", body);
 }
 
 /* ---- Bulletins (compose + all) --------------------------------- */
@@ -1102,6 +1167,7 @@ function router() {
     case "feed": return viewHome();
     case "profile": return viewProfile(parts[1]);
     case "friends": return viewFriends(parts[1]);
+    case "requests": return viewRequests();
     case "search": return viewSearch(parts[1] ? decodeURIComponent(parts[1]) : "");
     case "bulletins": return viewBulletins();
     case "mixer": return viewMixer();
