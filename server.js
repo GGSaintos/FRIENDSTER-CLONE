@@ -11,6 +11,14 @@ const db = require("./db");
 const PORT = process.env.PORT || 8088;
 const ROOT = __dirname;
 
+/* yt-dlp + ffmpeg are installed into ./bin by render-build.sh on deploy.
+   Fall back to a system-wide install when running locally. */
+const BIN_DIR = path.join(ROOT, "bin");
+const YTDLP_BIN = fs.existsSync(path.join(BIN_DIR, "yt-dlp"))
+  ? path.join(BIN_DIR, "yt-dlp")
+  : "yt-dlp";
+const HAS_LOCAL_FFMPEG = fs.existsSync(path.join(BIN_DIR, "ffmpeg"));
+
 const TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -143,10 +151,11 @@ function ytAudio(target, res) {
   const args = [
     "-x", "--audio-format", "mp3", "--audio-quality", "5",
     "--no-playlist", "--no-progress", "--write-info-json",
+    ...(HAS_LOCAL_FFMPEG ? ["--ffmpeg-location", BIN_DIR] : []),
     "-o", outTmpl, url.href,
   ];
-  console.log(`[yt] extracting: ${url.href}`);
-  execFile("yt-dlp", args, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+  console.log(`[yt] extracting with ${YTDLP_BIN}: ${url.href}`);
+  execFile(YTDLP_BIN, args, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
       console.error(`[yt] FAILED ${url.href}\n${String(stderr || err.message).slice(-500)}`);
       cleanup();
