@@ -15,12 +15,6 @@
    ============================================================ */
 
 const Mixer = (() => {
-  /* YouTube extraction only works locally (server hosts get IP-blocked by
-     YouTube). Everywhere else we steer users to direct links / uploads. */
-  const isLocalHost = () =>
-    /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)$/.test(location.hostname) ||
-    location.hostname === "";
-
   /* ---- tiny radix-2 FFT (used for optional key detection) -------- */
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
@@ -226,36 +220,6 @@ const Mixer = (() => {
       this.coverUrl = null;
       const arr = await file.arrayBuffer();
       return this._load(arr, file.name.replace(/\.[^.]+$/, ""));
-    }
-
-    async loadUrl(url) {
-      const isVideo = /(?:youtube\.com|youtu\.be|soundcloud\.com|vimeo\.com)/i.test(url);
-      if (isVideo && !isLocalHost()) {
-        throw new Error(
-          "YouTube import only works when the app runs locally. Here, paste a direct .mp3/.wav link or upload an audio file instead."
-        );
-      }
-      const endpoint = isVideo ? "/api/youtube-audio?url=" : "/api/fetch-audio?url=";
-      const res = await fetch(endpoint + encodeURIComponent(url));
-      if (!res.ok) {
-        let msg = "Import failed.";
-        try { msg = (await res.json()).error || msg; } catch (e) {}
-        throw new Error(msg);
-      }
-      const arr = await res.arrayBuffer();
-      let title = isVideo ? "video import" : "imported track";
-      this.coverUrl = null;
-      if (isVideo) {
-        const t = res.headers.get("X-Video-Title");
-        if (t) title = decodeURIComponent(t) || title;
-        const thumb = res.headers.get("X-Video-Thumbnail");
-        if (thumb) this.coverUrl = decodeURIComponent(thumb) || null;
-      } else {
-        try {
-          title = decodeURIComponent(url.split("?")[0].split("/").pop()).replace(/\.[^.]+$/, "") || title;
-        } catch (e) {}
-      }
-      return this._load(arr, title);
     }
 
     async _load(arr, title) {
@@ -543,10 +507,6 @@ const Mixer = (() => {
             <span class="deck-title" id="mx_name_${side}">Deck ${S}</span>
           </div>
           <input type="file" accept="audio/*" id="mx_file_${side}" class="mx-file">
-          <div class="mx-url-row">
-            <input type="text" id="mx_url_${side}" class="mx-url" placeholder="${isLocalHost() ? "…or paste an audio URL or YouTube link" : "…or paste a direct audio URL (.mp3/.wav)"}">
-            <button class="btn secondary" id="mx_urlbtn_${side}">Load URL</button>
-          </div>
           <canvas class="mx-wave" id="mx_wave_${side}" width="600" height="70"></canvas>
           <canvas class="mx-zoom" id="mx_zoom_${side}" width="600" height="80" title="Drag to scrub"></canvas>
           <div class="mx-grid-ctrl">
@@ -598,7 +558,6 @@ const Mixer = (() => {
       ["a", "b"].forEach((s) => {
         const deck = s === "a" ? this.deckA : this.deckB;
         this.q("#mx_file_" + s).addEventListener("change", (e) => this.importFile(s, e.target.files[0]));
-        this.q("#mx_urlbtn_" + s).addEventListener("click", () => this.importUrl(s, this.q("#mx_url_" + s).value.trim()));
         this.q("#mx_play_" + s).addEventListener("click", () => deck.toggle());
         this.q("#mx_bpm_" + s).addEventListener("input", (e) => {
           this.q("#mx_bpmval_" + s).textContent = e.target.value;
@@ -658,12 +617,6 @@ const Mixer = (() => {
     importFile(s, file) {
       if (!file) return;
       return this._import(s, (deck) => deck.loadFile(file));
-    }
-    importUrl(s, url) {
-      if (!url) return;
-      const isVideo = /(?:youtube\.com|youtu\.be|soundcloud\.com|vimeo\.com)/i.test(url);
-      const statusLabel = isVideo && isLocalHost() ? "importing from YouTube… (can take a bit)" : "loading…";
-      return this._import(s, (deck) => deck.loadUrl(url), statusLabel);
     }
 
     async _import(s, loader, statusLabel) {
