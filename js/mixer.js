@@ -15,6 +15,12 @@
    ============================================================ */
 
 const Mixer = (() => {
+  /* YouTube extraction only works locally (server hosts get IP-blocked by
+     YouTube). Everywhere else we steer users to direct links / uploads. */
+  const isLocalHost = () =>
+    /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|::1)$/.test(location.hostname) ||
+    location.hostname === "";
+
   /* ---- tiny radix-2 FFT (used for optional key detection) -------- */
   const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
   const MAJOR = [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88];
@@ -224,6 +230,11 @@ const Mixer = (() => {
 
     async loadUrl(url) {
       const isVideo = /(?:youtube\.com|youtu\.be|soundcloud\.com|vimeo\.com)/i.test(url);
+      if (isVideo && !isLocalHost()) {
+        throw new Error(
+          "YouTube import only works when the app runs locally. Here, paste a direct .mp3/.wav link or upload an audio file instead."
+        );
+      }
       const endpoint = isVideo ? "/api/youtube-audio?url=" : "/api/fetch-audio?url=";
       const res = await fetch(endpoint + encodeURIComponent(url));
       if (!res.ok) {
@@ -533,7 +544,7 @@ const Mixer = (() => {
           </div>
           <input type="file" accept="audio/*" id="mx_file_${side}" class="mx-file">
           <div class="mx-url-row">
-            <input type="text" id="mx_url_${side}" class="mx-url" placeholder="…or paste an audio URL or YouTube link">
+            <input type="text" id="mx_url_${side}" class="mx-url" placeholder="${isLocalHost() ? "…or paste an audio URL or YouTube link" : "…or paste a direct audio URL (.mp3/.wav)"}">
             <button class="btn secondary" id="mx_urlbtn_${side}">Load URL</button>
           </div>
           <canvas class="mx-wave" id="mx_wave_${side}" width="600" height="70"></canvas>
@@ -651,7 +662,7 @@ const Mixer = (() => {
     importUrl(s, url) {
       if (!url) return;
       const isVideo = /(?:youtube\.com|youtu\.be|soundcloud\.com|vimeo\.com)/i.test(url);
-      const statusLabel = isVideo ? "importing from YouTube… (can take a bit)" : "loading…";
+      const statusLabel = isVideo && isLocalHost() ? "importing from YouTube… (can take a bit)" : "loading…";
       return this._import(s, (deck) => deck.loadUrl(url), statusLabel);
     }
 
