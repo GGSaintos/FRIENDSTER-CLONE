@@ -151,11 +151,14 @@ function ytAudio(target, res) {
   const args = [
     "-x", "--audio-format", "mp3", "--audio-quality", "5",
     "--no-playlist", "--no-progress", "--write-info-json",
+    // Fail fast instead of hanging: cap socket waits and retries so a
+    // blocked/unavailable video errors out in seconds, not minutes.
+    "--socket-timeout", "15", "--retries", "2", "--no-warnings",
     ...(HAS_LOCAL_FFMPEG ? ["--ffmpeg-location", BIN_DIR] : []),
     "-o", outTmpl, url.href,
   ];
   console.log(`[yt] extracting with ${YTDLP_BIN}: ${url.href}`);
-  execFile(YTDLP_BIN, args, { timeout: 180000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+  execFile(YTDLP_BIN, args, { timeout: 90000, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
     if (err) {
       console.error(`[yt] FAILED ${url.href}\n${String(stderr || err.message).slice(-500)}`);
       cleanup();

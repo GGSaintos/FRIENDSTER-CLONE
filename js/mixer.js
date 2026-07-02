@@ -650,12 +650,14 @@ const Mixer = (() => {
     }
     importUrl(s, url) {
       if (!url) return;
-      return this._import(s, (deck) => deck.loadUrl(url));
+      const isVideo = /(?:youtube\.com|youtu\.be|soundcloud\.com|vimeo\.com)/i.test(url);
+      const statusLabel = isVideo ? "importing from YouTube… (can take a bit)" : "loading…";
+      return this._import(s, (deck) => deck.loadUrl(url), statusLabel);
     }
 
-    async _import(s, loader) {
+    async _import(s, loader, statusLabel) {
       const deck = s === "a" ? this.deckA : this.deckB;
-      this.q("#mx_read_" + s).textContent = "loading…";
+      this.q("#mx_read_" + s).textContent = statusLabel || "loading…";
       try {
         await Tone.start();
       } catch (e) {}
