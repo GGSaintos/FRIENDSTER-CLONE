@@ -744,7 +744,8 @@ function viewSearch(q) {
     const ql = q.toLowerCase();
     results = results.filter(
       (u) =>
-        u.name.toLowerCase().includes(ql) ||
+        (u.name || "").toLowerCase().includes(ql) ||
+        (u.username || "").toLowerCase().includes(ql) ||
         (u.location || "").toLowerCase().includes(ql) ||
         (u.interests || "").toLowerCase().includes(ql)
     );
@@ -774,7 +775,7 @@ function viewSearch(q) {
       <div class="box-title">Search Members</div>
       <div class="box-body">
         <div style="display:flex;gap:8px">
-          <input type="text" id="searchQ" value="${esc(q)}" placeholder="name, city, or interest"
+          <input type="text" id="searchQ" value="${esc(q)}" placeholder="name, username, city, or interest"
             onkeydown="if(event.key==='Enter')runSearch()">
           <button class="btn" onclick="runSearch()">Search</button>
         </div>
